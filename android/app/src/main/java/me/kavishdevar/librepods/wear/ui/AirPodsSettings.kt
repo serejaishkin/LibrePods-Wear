@@ -11,6 +11,7 @@ import androidx.wear.compose.material3.FilledTonalButton
 import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.Text
 import me.kavishdevar.librepods.bluetooth.AACPManager.Companion.ControlCommandIdentifiers
+import me.kavishdevar.librepods.data.StemAction
 import me.kavishdevar.librepods.wear.core.AirPodsState
 
 /**
@@ -57,6 +58,28 @@ fun StepperRow(
             FilledTonalButton(onClick = { onValueChange((value - step).coerceIn(0, 100)) }) { Text("-") }
             Text("$value%", style = MaterialTheme.typography.bodyMedium)
             FilledTonalButton(onClick = { onValueChange((value + step).coerceIn(0, 100)) }) { Text("+") }
+        }
+    }
+}
+
+@Composable
+fun StemActionRow(
+    label: String,
+    currentAction: StemAction,
+    onActionChange: (StemAction) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, style = MaterialTheme.typography.labelSmall)
+        Text(currentAction.name.replace("_", " "), style = MaterialTheme.typography.bodyMedium)
+        FilledTonalButton(
+            onClick = {
+                val currentIndex = StemAction.entries.indexOf(currentAction)
+                val nextIndex = (currentIndex + 1) % StemAction.entries.size
+                onActionChange(StemAction.entries[nextIndex])
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Change action", style = MaterialTheme.typography.labelSmall)
         }
     }
 }

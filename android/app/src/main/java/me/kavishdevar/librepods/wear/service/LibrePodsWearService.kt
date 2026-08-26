@@ -45,6 +45,8 @@ class LibrePodsWearService : Service() {
     lateinit var scanner: WearBluetoothScanner
         private set
 
+    val stateStore get() = controller.stateStore
+
     private lateinit var transport: WearBluetoothConnection
     private lateinit var session: AirPodsConnectionSession
     private val binder = LocalBinder()
@@ -53,6 +55,7 @@ class LibrePodsWearService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        setInstance(this)
 
         val adapter = getSystemService(BluetoothManager::class.java)?.adapter
             ?: error("Bluetooth adapter is unavailable")
@@ -81,6 +84,11 @@ class LibrePodsWearService : Service() {
                 if (address != null) controller.connectToDevice(address, name) else controller.connectToBondedAirPods()
             }
             ACTION_DISCONNECT -> controller.disconnect()
+            ACTION_AUTO_CONNECT -> controller.autoConnect()
+            else -> {
+                // Auto-connect on service start (boot, etc.)
+                controller.autoConnect()
+            }
         }
         return START_STICKY
     }
@@ -147,8 +155,24 @@ class LibrePodsWearService : Service() {
         private const val NOTIFICATION_ID = 1001
         const val ACTION_CONNECT = "me.kavishdevar.librepods.wear.CONNECT"
         const val ACTION_DISCONNECT = "me.kavishdevar.librepods.wear.DISCONNECT"
+        const val ACTION_AUTO_CONNECT = "me.kavishdevar.librepods.wear.AUTO_CONNECT"
         const val EXTRA_ADDRESS = "address"
         const val EXTRA_NAME = "name"
+
+        @Volatile
+        private var instance: LibrePodsWearService? = null
+
+        fun getStateStore(context: Context): AirPodsStateStore? {
+            return instance?.stateStore
+        }
+
+        fun setInstance(service: LibrePodsWearService) {
+            instance = service
+        }
+
+        fun clearInstance() {
+            instance = null
+        }
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(context, Intent(context, LibrePodsWearService::class.java))

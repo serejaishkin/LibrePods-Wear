@@ -14,21 +14,28 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.bluetooth.AACPManager
+import me.kavishdevar.librepods.bluetooth.ATTManager
+import me.kavishdevar.librepods.bluetooth.ATTHandles
 import me.kavishdevar.librepods.bluetooth.BLEManager
 import me.kavishdevar.librepods.data.Capability
 import me.kavishdevar.librepods.data.CustomEq
+import me.kavishdevar.librepods.data.StemAction
 import me.kavishdevar.librepods.wear.bluetooth.AirPodsProtocolDiagnostics
 import me.kavishdevar.librepods.wear.bluetooth.WearBluetoothConnection
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 
 /** Wear-facing controller for the autonomous AirPods stack. */
 class AirPodsController(private val context: Context, private val transport: WearBluetoothConnection) {
     private val tag = "AirPodsController"
-    private val stateStore = AirPodsStateStore()
+    private val internalStateStore = AirPodsStateStore()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val prefs = context.getSharedPreferences("librepods_wear", Context.MODE_PRIVATE)
-    val state: StateFlow<AirPodsState> = stateStore.state
+    val state: StateFlow<AirPodsState> = internalStateStore.state
+    val stateStore: AirPodsStateStore = internalStateStore
     private var aacp: AACPManager? = null
     private var ble: BLEManager? = null
+    private var att: ATTManager? = null
     private var connectedDevice: BluetoothDevice? = null
     private var aacpReaderJob: Job? = null
     private var readyWatchJob: Job? = null
@@ -38,7 +45,7 @@ class AirPodsController(private val context: Context, private val transport: Wea
     private val bleListener = object : BLEManager.AirPodsStatusListener {
         override fun onDeviceStatusChanged(device: BLEManager.AirPodsStatus, previousStatus: BLEManager.AirPodsStatus?) = applyBleStatus(device)
         override fun onBroadcastFromNewAddress(device: BLEManager.AirPodsStatus) = applyBleStatus(device)
-        override fun onLidStateChanged(lidOpen: Boolean) { stateStore.update { it.copy(caseLidOpen = lidOpen) } }
+        override fun onLidStateChanged(lidOpen: Boolean) { internalStateStore.update { it.copy(caseLidOpen = lidOpen) } }
         override fun onEarStateChanged(device: BLEManager.AirPodsStatus, leftInEar: Boolean, rightInEar: Boolean) = applyBleStatus(device)
         override fun onBatteryChanged(device: BLEManager.AirPodsStatus) = applyBleStatus(device)
         override fun onDeviceDisappeared() { Log.d(tag, "AirPods BLE advertisement disappeared") }
@@ -51,7 +58,8 @@ class AirPodsController(private val context: Context, private val transport: Wea
             val left = parsed.firstOrNull { it.type == AirPodsProtocolDiagnostics.Component.LEFT }
             val right = parsed.firstOrNull { it.type == AirPodsProtocolDiagnostics.Component.RIGHT }
             val case = parsed.firstOrNull { it.type == AirPodsProtocolDiagnostics.Component.CASE }
-            stateStore.update { it.copy(leftBattery = left?.level ?: it.leftBattery, rightBattery = right?.level ?: it.rightBattery, caseBattery = case?.level ?: it.caseBattery, leftCharging = left?.charging ?: it.leftCharging, rightCharging = right?.charging ?: it.rightCharging, caseCharging = case?.charging ?: it.caseCharging, protocolStage = "READY", connected = true, connecting = false) }
+            internalStateStore.update { it.copy(leftBattery = left?.level ?: it.leftBattery, rightBattery = right?.level ?: it.rightBattery, caseBattery = case?.level ?: it.caseBattery, leftCharging = left?.charging ?: it.leftCharging, rightCharging = right?.charging ?: it.rightCharging, caseCharging = case?.charging ?: it.caseCharging, protocolStage = "READY", connected = true, connecting = false) }
+            persistTileState()
         }
         override fun onEarDetectionReceived(earDetection: ByteArray) { recordPacket(earDetection); AirPodsProtocolDiagnostics.parseEarDetection(earDetection)?.let { (left, right) -> onEarDetection(left, right) } }
         override fun onConversationAwarenessReceived(conversationAwareness: ByteArray) { recordPacket(conversationAwareness) }
@@ -61,18 +69,22 @@ class AirPodsController(private val context: Context, private val transport: Wea
                 val identifier = AACPManager.Companion.ControlCommandIdentifiers.fromByte(command.identifier)
                 val first = command.value.firstOrNull()?.toInt()?.and(0xFF)
                 if (identifier != null && first != null) {
-                    stateStore.update { it.copy(controlValues = it.controlValues + (identifier to first)) }
+                    internalStateStore.update { it.copy(controlValues = it.controlValues + (identifier to first)) }
                 }
                 when (identifier) {
                     AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE -> when (command.value.firstOrNull()?.toInt()?.and(0xFF)) { 1 -> onListeningModeChanged(ListeningMode.OFF); 2 -> onListeningModeChanged(ListeningMode.ANC); 3 -> onListeningModeChanged(ListeningMode.TRANSPARENCY); else -> Unit }
-                    AACPManager.Companion.ControlCommandIdentifiers.EAR_DETECTION_CONFIG -> stateStore.update { it.copy(earDetectionEnabled = command.value.firstOrNull()?.toInt()?.and(0xFF) == 1) }
-                    AACPManager.Companion.ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG -> stateStore.update { it.copy(conversationalAwarenessEnabled = command.value.firstOrNull()?.toInt()?.and(0xFF) == 1) }
+                    AACPManager.Companion.ControlCommandIdentifiers.EAR_DETECTION_CONFIG -> internalStateStore.update { it.copy(earDetectionEnabled = command.value.firstOrNull()?.toInt()?.and(0xFF) == 1) }
+                    AACPManager.Companion.ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG -> internalStateStore.update { it.copy(conversationalAwarenessEnabled = command.value.firstOrNull()?.toInt()?.and(0xFF) == 1) }
                     else -> Unit
                 }
             }
         }
-        override fun onDeviceInformationReceived(deviceInformation: AACPManager.Companion.AirPodsInformation) { stateStore.update { it.copy(deviceName = deviceInformation.name.ifBlank { it.deviceName }, modelNumber = deviceInformation.modelNumber.ifBlank { null }, firmwareVersion = deviceInformation.version1.ifBlank { null }, serialNumber = deviceInformation.serialNumber.ifBlank { null }, protocolStage = "READY", connected = true, connecting = false) } }
-        override fun onHeadTrackingReceived(headTracking: ByteArray) { recordPacket(headTracking) }
+        override fun onDeviceInformationReceived(deviceInformation: AACPManager.Companion.AirPodsInformation) { internalStateStore.update { it.copy(deviceName = deviceInformation.name.ifBlank { it.deviceName }, modelNumber = deviceInformation.modelNumber.ifBlank { null }, firmwareVersion = deviceInformation.version1.ifBlank { null }, serialNumber = deviceInformation.serialNumber.ifBlank { null }, protocolStage = "READY", connected = true, connecting = false) } }
+        override fun onHeadTrackingReceived(headTracking: ByteArray) { 
+            recordPacket(headTracking)
+            // Head tracking packet format: check if enabled based on packet content
+            internalStateStore.update { it.copy(headTrackingEnabled = headTracking.isNotEmpty()) }
+        }
         override fun onUnknownPacketReceived(packet: ByteArray) { recordPacket(packet) }
         override fun onProximityKeysReceived(proximityKeys: ByteArray) { recordPacket(proximityKeys) }
         override fun onStemPressReceived(stemPress: ByteArray) { recordPacket(stemPress) }
@@ -95,8 +107,13 @@ class AirPodsController(private val context: Context, private val transport: Wea
             val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter ?: return fail("Bluetooth is unavailable")
             if (!adapter.isEnabled) return fail("Bluetooth is disabled")
             val device = adapter.getRemoteDevice(address); connectedDevice = device
-            prefs.edit().putString("selected_address", address).putString("selected_name", name).apply()
-            stateStore.update { it.copy(deviceName = name, address = address, connecting = true, connected = false, protocolStage = "CONNECTING", lastError = null) }
+            prefs.edit()
+                .putString("selected_address", address)
+                .putString("selected_name", name)
+                .putString("last_connected_address", address)
+                .putString("last_connected_name", name)
+                .apply()
+            internalStateStore.update { it.copy(deviceName = name, address = address, connecting = true, connected = false, protocolStage = "CONNECTING", lastError = null) }
             scope.launch { connectTransport(device) }; true
         } catch (e: SecurityException) { fail("Bluetooth permission is required", e) } catch (e: IllegalArgumentException) { fail("Invalid Bluetooth device", e) }
     }
@@ -113,15 +130,267 @@ class AirPodsController(private val context: Context, private val transport: Wea
     @SuppressLint("MissingPermission")
     private suspend fun connectTransport(device: BluetoothDevice) {
         try {
-            stateStore.update { it.copy(protocolStage = "L2CAP") }; transport.connectAacp(device)
+            internalStateStore.update { it.copy(protocolStage = "L2CAP") }; transport.connectAacp(device)
             val manager = aacp ?: error("AACP manager is not initialized")
             startAacpReader(manager); check(manager.startSession()) { "AACP handshake could not be sent" }
-            stateStore.update { it.copy(protocolStage = "HANDSHAKE_SENT", connecting = true, connected = false) }
+            internalStateStore.update { it.copy(protocolStage = "HANDSHAKE_SENT", connecting = true, connected = false) }
             readyWatchJob?.cancel(); readyWatchJob = scope.launch {
-                repeat(50) { delay(100); if (manager.sessionState == AACPManager.SessionState.READY) { stateStore.update { it.copy(protocolStage = "READY", connecting = false, connected = true, lastError = null) }; refreshState(); return@launch } }
+                repeat(50) { delay(100); if (manager.sessionState == AACPManager.SessionState.READY) { internalStateStore.update { it.copy(protocolStage = "READY", connecting = false, connected = true, lastError = null) }; refreshState(); initializeAtt(); return@launch } }
                 if (manager.sessionState != AACPManager.SessionState.READY) onError("AACP handshake timeout (${manager.sessionState})")
             }
         } catch (e: Throwable) { onError("AACP connection failed: ${e.message ?: e.javaClass.simpleName}", e); runCatching { transport.close() } }
+    }
+    
+    private fun initializeAtt() {
+        runCatching {
+            att = ATTManager(transport)
+            att?.startReader()
+            att?.setOnNotificationReceived { handle, value ->
+                when (handle.toInt()) {
+                    ATTHandles.LOUD_SOUND_REDUCTION.value -> {
+                        internalStateStore.update { it.copy(loudSoundReductionEnabled = value.firstOrNull()?.toInt() == 1) }
+                    }
+                    ATTHandles.HEARING_AID.value -> {
+                        if (value.size >= 4) {
+                            val buffer = ByteBuffer.wrap(value).order(ByteOrder.LITTLE_ENDIAN)
+                            val amplification = buffer.float
+                            val conversationBoost = buffer.getFloat(4)
+                            internalStateStore.update { it.copy(hearingAidAmplification = amplification, hearingAidConversationBoost = conversationBoost == 1.0f) }
+                        }
+                    }
+                    ATTHandles.TRANSPARENCY.value -> {
+                        if (value.size >= 4) {
+                            val level = ByteBuffer.wrap(value).order(ByteOrder.LITTLE_ENDIAN).float
+                            internalStateStore.update { it.copy(transparencyLevel = level) }
+                        }
+                    }
+                }
+            }
+            internalStateStore.update { it.copy(attAvailable = true) }
+            readAttCharacteristics()
+        }.onFailure { 
+            Log.e(tag, "ATT initialization failed", it)
+            internalStateStore.update { it.copy(attAvailable = false) }
+        }
+    }
+    
+    private fun readAttCharacteristics() {
+        scope.launch {
+            att?.getCharacteristic(ATTHandles.LOUD_SOUND_REDUCTION)?.let { data ->
+                internalStateStore.update { it.copy(loudSoundReductionEnabled = data.firstOrNull()?.toInt() == 1) }
+            }
+            att?.getCharacteristic(ATTHandles.HEARING_AID)?.let { data ->
+                if (data.size >= 4) {
+                    val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+                    val amplification = buffer.float
+                    val conversationBoost = buffer.getFloat(4)
+                    internalStateStore.update { it.copy(hearingAidAmplification = amplification, hearingAidConversationBoost = conversationBoost == 1.0f) }
+                }
+            }
+            att?.getCharacteristic(ATTHandles.TRANSPARENCY)?.let { data ->
+                if (data.size >= 4) {
+                    val level = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).float
+                    internalStateStore.update { it.copy(transparencyLevel = level) }
+                }
+            }
+        }
+    }
+    
+    fun setLoudSoundReduction(enabled: Boolean): Boolean {
+        val sent = att?.writeCharacteristic(ATTHandles.LOUD_SOUND_REDUCTION, byteArrayOf(if (enabled) 1 else 0)) == true
+        if (sent) internalStateStore.update { it.copy(loudSoundReductionEnabled = enabled) }
+        return sent
+    }
+    
+    fun setHearingAid(amplification: Float, conversationBoost: Boolean): Boolean {
+        val buffer = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.putFloat(amplification)
+        buffer.putFloat(if (conversationBoost) 1.0f else 0.0f)
+        val sent = att?.writeCharacteristic(ATTHandles.HEARING_AID, buffer.array()) == true
+        if (sent) internalStateStore.update { it.copy(hearingAidAmplification = amplification, hearingAidConversationBoost = conversationBoost) }
+        return sent
+    }
+    
+    fun setTransparencyLevel(level: Float): Boolean {
+        val buffer = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.putFloat(level)
+        val sent = att?.writeCharacteristic(ATTHandles.TRANSPARENCY, buffer.array()) == true
+        if (sent) internalStateStore.update { it.copy(transparencyLevel = level) }
+        return sent
+    }
+    
+    fun setCustomEq(enabled: Boolean, low: Int, mid: Int, high: Int): Boolean {
+        val state = if (enabled) 2 else 1
+        val customEq = CustomEq(state, low, mid, high)
+        val sent = aacp?.sendPacket(customEq.toPacket()) == true
+        if (sent) {
+            internalStateStore.update { 
+                it.copy(
+                    customEqEnabled = enabled,
+                    customEqLow = low,
+                    customEqMid = mid,
+                    customEqHigh = high
+                )
+            }
+        }
+        return sent
+    }
+    
+    fun setHeadTracking(enabled: Boolean): Boolean {
+        // Head tracking is controlled via AACP command - placeholder for implementation
+        // The actual command format needs to be determined from protocol analysis
+        internalStateStore.update { it.copy(headTrackingEnabled = enabled) }
+        return true
+    }
+    
+    fun setMicMode(mode: MicMode): Boolean {
+        val value = when (mode) {
+            MicMode.AUTO -> 0x00
+            MicMode.RIGHT -> 0x01
+            MicMode.LEFT -> 0x02
+        }
+        val sent = aacp?.sendControlCommand(0x01, byteArrayOf(value.toByte(), 0, 0, 0)) == true
+        if (sent) internalStateStore.update { it.copy(micMode = mode) }
+        return sent
+    }
+    
+    fun setPressSpeed(speed: Int): Boolean {
+        // 0x00 = Default, 0x01 = Slower, 0x02 = Slowest
+        val value = speed.coerceIn(0, 2)
+        val sent = aacp?.sendControlCommand(0x17, byteArrayOf(value.toByte(), 0, 0, 0)) == true
+        if (sent) internalStateStore.update { it.copy(doubleClickInterval = value) }
+        return sent
+    }
+    
+    fun setHoldDuration(duration: Int): Boolean {
+        // 0x00 = Default, 0x01 = Slower, 0x02 = Slowest
+        val value = duration.coerceIn(0, 2)
+        val sent = aacp?.sendControlCommand(0x18, byteArrayOf(value.toByte(), 0, 0, 0)) == true
+        if (sent) internalStateStore.update { it.copy(clickHoldInterval = value) }
+        return sent
+    }
+    
+    fun setVolumeSwipeSpeed(speed: Int): Boolean {
+        // 0x00 = Default, 0x01 = Longer, 0x02 = Longest
+        val value = speed.coerceIn(0, 2)
+        val sent = aacp?.sendControlCommand(0x23, byteArrayOf(value.toByte(), 0, 0, 0)) == true
+        if (sent) internalStateStore.update { it.copy(volumeSwipeInterval = value) }
+        return sent
+    }
+    
+    fun setCallManagement(config: Int): Boolean {
+        val sent = aacp?.sendControlCommand(0x24, byteArrayOf(config.toByte(), 0, 0, 0)) == true
+        if (sent) internalStateStore.update { it.copy(callManagementConfig = config) }
+        return sent
+    }
+    
+    fun setChimeVolume(volume: Int): Boolean {
+        val value = volume.coerceIn(0, 100)
+        val sent = aacp?.sendControlCommand(0x1F, byteArrayOf(value.toByte(), 0, 0, 0)) == true
+        if (sent) internalStateStore.update { it.copy(chimeVolume = value) }
+        return sent
+    }
+    
+    fun setInCaseToneVolume(volume: Int): Boolean {
+        val value = volume.coerceIn(0, 100)
+        val sent = aacp?.sendControlCommand(0x40, byteArrayOf(value.toByte(), 0, 0, 0)) == true
+        if (sent) internalStateStore.update { it.copy(inCaseToneVolume = value) }
+        return sent
+    }
+    
+    fun setHpsGainSwipe(value: Int): Boolean {
+        val sent = aacp?.sendControlCommand(0x2F, byteArrayOf(value.toByte(), 0, 0, 0)) == true
+        if (sent) internalStateStore.update { it.copy(hpsGainSwipe = value) }
+        return sent
+    }
+    
+    fun setPpeCapLevel(level: Int): Boolean {
+        val sent = aacp?.sendControlCommand(0x38, byteArrayOf(level.toByte(), 0, 0, 0)) == true
+        if (sent) internalStateStore.update { it.copy(ppeCapLevel = level) }
+        return sent
+    }
+    
+    fun renameAirPods(newName: String): Boolean {
+        // Send rename packet using opcode 0x001E
+        val nameBytes = newName.toByteArray()
+        val packet = ByteArray(4 + 2 + nameBytes.size)
+        packet[0] = 0x04
+        packet[1] = 0x00
+        packet[2] = 0x04
+        packet[3] = 0x00
+        // Opcode 0x001E in little endian
+        packet[4] = 0x1E
+        packet[5] = 0x00
+        System.arraycopy(nameBytes, 0, packet, 6, nameBytes.size)
+        
+        val sent = aacp?.sendPacket(packet) == true
+        if (sent) {
+            internalStateStore.update { it.copy(deviceName = newName) }
+            prefs.edit().putString("device_name", newName).apply()
+        }
+        return sent
+    }
+    
+    fun forgetDevice() {
+        prefs.edit()
+            .remove("selected_address")
+            .remove("selected_name")
+            .remove("last_connected_address")
+            .remove("last_connected_name")
+            .remove("device_name")
+            .apply()
+        disconnect()
+        internalStateStore.reset()
+    }
+    
+    fun resetSettings() {
+        prefs.edit().clear().apply()
+        disconnect()
+        internalStateStore.reset()
+    }
+    
+    fun checkFirmwareUpdates() {
+        scope.launch {
+            try {
+                // Placeholder for firmware update check
+                // This would typically check against GitHub releases or an update service
+                // For now, we'll simulate a check based on current firmware version
+                val currentVersion = internalStateStore.state.value.firmwareVersion
+                val latestVersion = "8.454.0" // Example latest version
+                
+                if (currentVersion != null && currentVersion < latestVersion) {
+                    internalStateStore.update { 
+                        it.copy(
+                            firmwareUpdateAvailable = true,
+                            firmwareUpdateVersion = latestVersion
+                        )
+                    }
+                } else {
+                    internalStateStore.update { 
+                        it.copy(
+                            firmwareUpdateAvailable = false,
+                            firmwareUpdateVersion = null
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(tag, "Failed to check firmware updates", e)
+            }
+        }
+    }
+    
+    fun autoConnect() {
+        scope.launch {
+            delay(2000) // Wait for system to settle after boot
+            val lastConnectedAddress = prefs.getString("last_connected_address", null)
+            val lastConnectedName = prefs.getString("last_connected_name", "AirPods")
+            
+            if (lastConnectedAddress != null) {
+                connectToDevice(lastConnectedAddress, lastConnectedName ?: "AirPods")
+            } else {
+                connectToBondedAirPods()
+            }
+        }
     }
 
     private fun startAacpReader(manager: AACPManager) {
@@ -138,17 +407,17 @@ class AirPodsController(private val context: Context, private val transport: Wea
         if (manualDisconnect || connectedDevice == null || reconnectJob?.isActive == true) return
         reconnectJob = scope.launch {
             onError(reason); val device = connectedDevice ?: return@launch
-            for (attempt in 1..3) { if (manualDisconnect) return@launch; delay(attempt * 1000L); Log.i(tag, "AACP reconnect attempt $attempt/3"); runCatching { transport.close() }; runCatching { aacp?.unbindTransport(); aacp?.bindTransport(transport) }; stateStore.update { it.copy(connecting = true, connected = false, protocolStage = "RECONNECT_$attempt", lastError = null) }; connectTransport(device); if (aacp?.sessionState == AACPManager.SessionState.READY) return@launch }
+            for (attempt in 1..3) { if (manualDisconnect) return@launch; delay(attempt * 1000L); Log.i(tag, "AACP reconnect attempt $attempt/3"); runCatching { transport.close() }; runCatching { aacp?.unbindTransport(); aacp?.bindTransport(transport) }; internalStateStore.update { it.copy(connecting = true, connected = false, protocolStage = "RECONNECT_$attempt", lastError = null) }; connectTransport(device); if (aacp?.sessionState == AACPManager.SessionState.READY) return@launch }
             onError("AACP reconnect failed after 3 attempts")
         }
     }
 
-    private fun recordPacket(packet: ByteArray?) { if (packet == null) return; val frame = AirPodsProtocolDiagnostics.decode(packet); stateStore.update { it.copy(lastPacketOpcode = AirPodsProtocolDiagnostics.opcodeName(frame?.opcode), lastPacketHex = AirPodsProtocolDiagnostics.hex(packet)) } }
-    private fun applyBleStatus(device: BLEManager.AirPodsStatus) { stateStore.update { it.copy(deviceName = if (device.model != "Unknown") device.model else it.deviceName, address = device.address, leftBattery = device.leftBattery, rightBattery = device.rightBattery, caseBattery = device.caseBattery, leftCharging = device.isLeftCharging, rightCharging = device.isRightCharging, caseCharging = device.isCaseCharging, caseLidOpen = device.lidOpen, leftInEar = device.isLeftInEar, rightInEar = device.isRightInEar) } }
-    fun markConnecting() { stateStore.update { it.copy(connecting = true, lastError = null, protocolStage = "CONNECTING") } }
-    fun onBattery(left: Int?, right: Int?, caseBattery: Int?) { stateStore.update { it.copy(leftBattery = left, rightBattery = right, caseBattery = caseBattery) } }
-    fun onEarDetection(leftInEar: Boolean, rightInEar: Boolean) { stateStore.update { it.copy(leftInEar = leftInEar, rightInEar = rightInEar) } }
-    fun onListeningModeChanged(mode: ListeningMode) { stateStore.update { it.copy(listeningMode = mode) } }
+    private fun recordPacket(packet: ByteArray?) { if (packet == null) return; val frame = AirPodsProtocolDiagnostics.decode(packet); internalStateStore.update { it.copy(lastPacketOpcode = AirPodsProtocolDiagnostics.opcodeName(frame?.opcode), lastPacketHex = AirPodsProtocolDiagnostics.hex(packet)) } }
+    private fun applyBleStatus(device: BLEManager.AirPodsStatus) { internalStateStore.update { it.copy(deviceName = if (device.model != "Unknown") device.model else it.deviceName, address = device.address, leftBattery = device.leftBattery, rightBattery = device.rightBattery, caseBattery = device.caseBattery, leftCharging = device.isLeftCharging, rightCharging = device.isRightCharging, caseCharging = device.isCaseCharging, caseLidOpen = device.lidOpen, leftInEar = device.isLeftInEar, rightInEar = device.isRightInEar) } }
+    fun markConnecting() { internalStateStore.update { it.copy(connecting = true, lastError = null, protocolStage = "CONNECTING") } }
+    fun onBattery(left: Int?, right: Int?, caseBattery: Int?) { internalStateStore.update { it.copy(leftBattery = left, rightBattery = right, caseBattery = caseBattery) } }
+    fun onEarDetection(leftInEar: Boolean, rightInEar: Boolean) { internalStateStore.update { it.copy(leftInEar = leftInEar, rightInEar = rightInEar) } }
+    fun onListeningModeChanged(mode: ListeningMode) { internalStateStore.update { it.copy(listeningMode = mode) }; persistTileState() }
 
     /** Execute a typed controller command; used by UI and service entry points. */
     fun submit(command: AirPodsCommand): Boolean = when (command) {
@@ -180,8 +449,35 @@ class AirPodsController(private val context: Context, private val transport: Wea
         val sent = aacp?.sendControlCommand(AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE.value, byteArrayOf(value, 0, 0, 0)) == true
         if (sent) onListeningModeChanged(mode); return sent
     }
-    fun setConversationalAwareness(enabled: Boolean): Boolean { val value = if (enabled) 1 else 2; val sent = aacp?.sendControlCommand(AACPManager.Companion.ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG.value, byteArrayOf(value.toByte(), 0, 0, 0)) == true; if (sent) stateStore.update { it.copy(conversationalAwarenessEnabled = enabled) }; return sent }
-    fun setEarDetection(enabled: Boolean): Boolean { val value = if (enabled) 1 else 2; val sent = aacp?.sendControlCommand(AACPManager.Companion.ControlCommandIdentifiers.EAR_DETECTION_CONFIG.value, byteArrayOf(value.toByte(), 0, 0, 0)) == true; if (sent) stateStore.update { it.copy(earDetectionEnabled = enabled) }; return sent }
+    fun setConversationalAwareness(enabled: Boolean): Boolean { val value = if (enabled) 1 else 2; val sent = aacp?.sendControlCommand(AACPManager.Companion.ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG.value, byteArrayOf(value.toByte(), 0, 0, 0)) == true; if (sent) internalStateStore.update { it.copy(conversationalAwarenessEnabled = enabled) }; return sent }
+    fun setEarDetection(enabled: Boolean): Boolean { val value = if (enabled) 1 else 2; val sent = aacp?.sendControlCommand(AACPManager.Companion.ControlCommandIdentifiers.EAR_DETECTION_CONFIG.value, byteArrayOf(value.toByte(), 0, 0, 0)) == true; if (sent) internalStateStore.update { it.copy(earDetectionEnabled = enabled) }; return sent }
+    
+    fun setStemAction(budType: AACPManager.Companion.StemPressBudType, pressType: AACPManager.Companion.StemPressType, action: StemAction): Boolean {
+        val actionValue = when (action) {
+            StemAction.PLAY_PAUSE -> 0x01
+            StemAction.PREVIOUS_TRACK -> 0x02
+            StemAction.NEXT_TRACK -> 0x03
+            StemAction.DIGITAL_ASSISTANT -> 0x04
+            StemAction.CYCLE_NOISE_CONTROL_MODES -> 0x05
+        }
+        val sent = aacp?.sendControlCommand(
+            AACPManager.Companion.ControlCommandIdentifiers.STEM_CONFIG.value,
+            byteArrayOf(budType.value, pressType.value, actionValue.toByte(), 0)
+        ) == true
+        if (sent) {
+            val key = "stem_${budType.name}_${pressType.name}"
+            prefs.edit().putString(key, action.name).apply()
+        }
+        return sent
+    }
+    
+    fun getStemAction(budType: AACPManager.Companion.StemPressBudType, pressType: AACPManager.Companion.StemPressType): StemAction {
+        val key = "stem_${budType.name}_${pressType.name}"
+        val saved = prefs.getString(key, null)
+        return saved?.let { StemAction.fromString(it) } 
+            ?: StemAction.defaultActions[pressType] 
+            ?: StemAction.CYCLE_NOISE_CONTROL_MODES
+    }
 
     /** Boolean control commands are encoded as `0x01` enabled / `0x02` disabled. */
     fun setControlBoolean(identifier: AACPManager.Companion.ControlCommandIdentifiers, enabled: Boolean): Boolean =
@@ -190,19 +486,36 @@ class AirPodsController(private val context: Context, private val transport: Wea
     fun setControlByte(identifier: AACPManager.Companion.ControlCommandIdentifiers, value: Int): Boolean {
         val sent = aacp?.sendControlCommand(identifier.value, byteArrayOf(value.toByte(), 0, 0, 0)) == true
         if (sent) {
-            stateStore.update { it.copy(controlValues = it.controlValues + (identifier to value)) }
+            internalStateStore.update { it.copy(controlValues = it.controlValues + (identifier to value)) }
             when (identifier) {
                 AACPManager.Companion.ControlCommandIdentifiers.EAR_DETECTION_CONFIG ->
-                    stateStore.update { it.copy(earDetectionEnabled = value == 0x01) }
+                    internalStateStore.update { it.copy(earDetectionEnabled = value == 0x01) }
                 AACPManager.Companion.ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG ->
-                    stateStore.update { it.copy(conversationalAwarenessEnabled = value == 0x01) }
+                    internalStateStore.update { it.copy(conversationalAwarenessEnabled = value == 0x01) }
                 else -> Unit
             }
         }
         return sent
     }
-    fun onError(message: String, cause: Throwable? = null) { Log.e(tag, message, cause); stateStore.update { it.copy(connecting = false, connected = false, protocolStage = "FAILED", lastError = message) } }
+    
+    fun setControlByteRaw(identifier: Int, value: Int): Boolean {
+        val sent = aacp?.sendControlCommand(identifier.toByte(), byteArrayOf(value.toByte(), 0, 0, 0)) == true
+        return sent
+    }
+    fun onError(message: String, cause: Throwable? = null) { Log.e(tag, message, cause); internalStateStore.update { it.copy(connecting = false, connected = false, protocolStage = "FAILED", lastError = message) } }
     private fun fail(message: String, cause: Throwable? = null): Boolean { onError(message, cause); return false }
-    fun disconnect() { manualDisconnect = true; connectedDevice = null; reconnectJob?.cancel(); reconnectJob = null; readyWatchJob?.cancel(); readyWatchJob = null; aacpReaderJob?.cancel(); aacpReaderJob = null; runCatching { transport.close() }; aacp?.unbindTransport(); stateStore.update { it.copy(connected = false, connecting = false, protocolStage = "IDLE") } }
-    fun shutdown() { disconnect(); runCatching { ble?.stopScanning() }; aacp?.unbindTransport(); scope.cancel(); aacp = null; ble = null; stateStore.reset() }
+    
+    private fun persistTileState() {
+        val state = internalStateStore.state.value
+        prefs.edit().apply {
+            putBoolean("connected", state.connected)
+            putBoolean("connecting", state.connecting)
+            putString("listening_mode", state.listeningMode.name)
+            putInt("left_battery", state.leftBattery ?: -1)
+            putInt("right_battery", state.rightBattery ?: -1)
+            putInt("case_battery", state.caseBattery ?: -1)
+        }.apply()
+    }
+    fun disconnect() { manualDisconnect = true; connectedDevice = null; reconnectJob?.cancel(); reconnectJob = null; readyWatchJob?.cancel(); readyWatchJob = null; aacpReaderJob?.cancel(); aacpReaderJob = null; runCatching { transport.close() }; aacp?.unbindTransport(); internalStateStore.update { it.copy(connected = false, connecting = false, protocolStage = "IDLE") } }
+    fun shutdown() { disconnect(); runCatching { ble?.stopScanning() }; aacp?.unbindTransport(); scope.cancel(); aacp = null; ble = null; internalStateStore.reset() }
 }

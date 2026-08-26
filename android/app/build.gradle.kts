@@ -50,5 +50,8 @@ dependencies {
     implementation(libs.androidx.wear.compose.foundation)
     implementation(libs.annotations)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation("androidx.wear.tiles:tiles:1.4.0")
+    implementation("androidx.wear.tiles:tiles-material:1.4.0")
+    implementation("androidx.wear:wear-remote-interactions:1.0.0")
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
