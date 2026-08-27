@@ -2,13 +2,16 @@ package me.kavishdevar.librepods.wear.tiles
 
 import android.content.Context
 import android.content.SharedPreferences
-import androidx.wear.protolayout.DeviceParametersBuilders
-import androidx.wear.protolayout.LayoutElementBuilders
-import androidx.wear.protolayout.TimelineBuilders
-import androidx.wear.protolayout.material.Text
-import androidx.wear.protolayout.material.layouts.PrimaryLayout
+import androidx.wear.tiles.DeviceParametersBuilders
+import androidx.wear.tiles.LayoutElementBuilders
+import androidx.wear.tiles.LayoutElementBuilders.ColorProp
+import androidx.wear.tiles.RequestBuilders
+import androidx.wear.tiles.ResourceBuilders
 import androidx.wear.tiles.TileBuilders
 import androidx.wear.tiles.TileService
+import androidx.wear.tiles.TimelineBuilders
+import androidx.wear.tiles.material.Text
+import androidx.wear.tiles.material.layouts.PrimaryLayout
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 
@@ -21,7 +24,7 @@ class AirPodsTileService : TileService() {
         prefs = getSharedPreferences("librepods_wear", Context.MODE_PRIVATE)
     }
 
-    override fun onTileRequest(requestParams: TileBuilders.TileRequest): ListenableFuture<TileBuilders.Tile> {
+    override fun onTileRequest(requestParams: RequestBuilders.TileRequest): ListenableFuture<TileBuilders.Tile> {
         val deviceParams = requestParams.deviceParameters ?: DeviceParametersBuilders.DeviceParameters.Builder().build()
 
         val connected = prefs.getBoolean("connected", false)
@@ -38,7 +41,7 @@ class AirPodsTileService : TileService() {
                     rightBattery.takeIf { it in 0..100 },
                     caseBattery.takeIf { it in 0..100 }
                 ).average().let { if (it.isNaN()) null else it.toInt() }
-                
+
                 if (battery != null) "Connected: $battery%" else "Connected"
             }
             connecting -> "Connecting..."
@@ -74,28 +77,30 @@ class AirPodsTileService : TileService() {
         return Futures.immediateFuture(tile)
     }
 
-    override fun onTileResourcesRequest(requestParams: androidx.wear.tiles.TileBuilders.ResourcesRequest): ListenableFuture<androidx.wear.tiles.ResourceBuilders.Resources> {
-        val resources = androidx.wear.tiles.ResourceBuilders.Resources.Builder()
+    override fun onTileResourcesRequest(requestParams: RequestBuilders.ResourcesRequest): ListenableFuture<ResourceBuilders.Resources> {
+        val resources = ResourceBuilders.Resources.Builder()
             .setVersion(RESOURCES_VERSION)
             .build()
 
         return Futures.immediateFuture(resources)
     }
 
-    private fun buildTileLayout(statusText: String, modeText: String, deviceParams: DeviceParametersBuilders.DeviceParameters): LayoutElementBuilders.LayoutElement {
+    private fun buildTileLayout(
+        statusText: String,
+        modeText: String,
+        deviceParams: DeviceParametersBuilders.DeviceParameters
+    ): LayoutElementBuilders.LayoutElement {
         return PrimaryLayout.Builder(deviceParams)
             .setContent(
                 LayoutElementBuilders.Column.Builder()
                     .addContent(
-                        Text.Builder()
-                            .setText(statusText)
-                            .setColor(LayoutElementBuilders.ColorBuilders.argb(0xFFFFFFFF.toInt()))
+                        Text.Builder(this, statusText)
+                            .setColor(ColorProp.Builder(0xFFFFFFFF.toInt()).build())
                             .build()
                     )
                     .addContent(
-                        Text.Builder()
-                            .setText(modeText)
-                            .setColor(LayoutElementBuilders.ColorBuilders.argb(0xFFAAAAAA.toInt()))
+                        Text.Builder(this, modeText)
+                            .setColor(ColorProp.Builder(0xFFAAAAAA.toInt()).build())
                             .build()
                     )
                     .build()
