@@ -12,8 +12,8 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.wear.compose.material3.Button
 import androidx.wear.compose.material3.MaterialTheme
-import androidx.wear.compose.material3.OutlinedTextField
 import androidx.wear.compose.material3.Text
+import androidx.wear.compose.material3.TextField
 
 @Composable
 fun RenameAirPodsDialog(
@@ -25,7 +25,7 @@ fun RenameAirPodsDialog(
     
     Text("Rename AirPods", style = MaterialTheme.typography.titleMedium)
     
-    OutlinedTextField(
+    TextField(
         value = newName,
         onValueChange = { newName = it },
         label = { Text("New name") },

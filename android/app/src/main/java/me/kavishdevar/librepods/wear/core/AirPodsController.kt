@@ -197,26 +197,41 @@ class AirPodsController(private val context: Context, private val transport: Wea
     }
     
     fun setLoudSoundReduction(enabled: Boolean): Boolean {
-        val sent = att?.writeCharacteristic(ATTHandles.LOUD_SOUND_REDUCTION, byteArrayOf(if (enabled) 1 else 0)) == true
-        if (sent) internalStateStore.update { it.copy(loudSoundReductionEnabled = enabled) }
-        return sent
+        try {
+            att?.writeCharacteristic(ATTHandles.LOUD_SOUND_REDUCTION, byteArrayOf(if (enabled) 1 else 0))
+            internalStateStore.update { it.copy(loudSoundReductionEnabled = enabled) }
+            return true
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to set loud sound reduction", e)
+            return false
+        }
     }
     
     fun setHearingAid(amplification: Float, conversationBoost: Boolean): Boolean {
-        val buffer = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
-        buffer.putFloat(amplification)
-        buffer.putFloat(if (conversationBoost) 1.0f else 0.0f)
-        val sent = att?.writeCharacteristic(ATTHandles.HEARING_AID, buffer.array()) == true
-        if (sent) internalStateStore.update { it.copy(hearingAidAmplification = amplification, hearingAidConversationBoost = conversationBoost) }
-        return sent
+        try {
+            val buffer = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN)
+            buffer.putFloat(amplification)
+            buffer.putFloat(if (conversationBoost) 1.0f else 0.0f)
+            att?.writeCharacteristic(ATTHandles.HEARING_AID, buffer.array())
+            internalStateStore.update { it.copy(hearingAidAmplification = amplification, hearingAidConversationBoost = conversationBoost) }
+            return true
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to set hearing aid", e)
+            return false
+        }
     }
     
     fun setTransparencyLevel(level: Float): Boolean {
-        val buffer = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
-        buffer.putFloat(level)
-        val sent = att?.writeCharacteristic(ATTHandles.TRANSPARENCY, buffer.array()) == true
-        if (sent) internalStateStore.update { it.copy(transparencyLevel = level) }
-        return sent
+        try {
+            val buffer = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN)
+            buffer.putFloat(level)
+            att?.writeCharacteristic(ATTHandles.TRANSPARENCY, buffer.array())
+            internalStateStore.update { it.copy(transparencyLevel = level) }
+            return true
+        } catch (e: Exception) {
+            Log.e(tag, "Failed to set transparency level", e)
+            return false
+        }
     }
     
     fun setCustomEq(enabled: Boolean, low: Int, mid: Int, high: Int): Boolean {

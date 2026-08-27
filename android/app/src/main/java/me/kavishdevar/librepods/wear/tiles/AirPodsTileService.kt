@@ -2,13 +2,13 @@ package me.kavishdevar.librepods.wear.tiles
 
 import android.content.Context
 import android.content.SharedPreferences
-import androidx.wear.tiles.DeviceParameters
-import androidx.wear.tiles.LayoutElementBuilders
-import androidx.wear.tiles.TimelineBuilders
+import androidx.wear.protolayout.DeviceParametersBuilders
+import androidx.wear.protolayout.LayoutElementBuilders
+import androidx.wear.protolayout.TimelineBuilders
+import androidx.wear.protolayout.material.Text
+import androidx.wear.protolayout.material.layouts.PrimaryLayout
 import androidx.wear.tiles.TileBuilders
 import androidx.wear.tiles.TileService
-import androidx.wear.tiles.material.Text
-import androidx.wear.tiles.material.layouts.PrimaryLayout
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 
@@ -22,7 +22,7 @@ class AirPodsTileService : TileService() {
     }
 
     override fun onTileRequest(requestParams: TileBuilders.TileRequest): ListenableFuture<TileBuilders.Tile> {
-        val deviceParams = requestParams.deviceParameters ?: DeviceParameters.DEVICE_PARAMS_UNKNOWN
+        val deviceParams = requestParams.deviceParameters ?: DeviceParametersBuilders.DeviceParameters.Builder().build()
 
         val connected = prefs.getBoolean("connected", false)
         val connecting = prefs.getBoolean("connecting", false)
@@ -74,43 +74,27 @@ class AirPodsTileService : TileService() {
         return Futures.immediateFuture(tile)
     }
 
-    override fun onTileResourcesRequest(requestParams: TileBuilders.ResourcesRequest): ListenableFuture<TileBuilders.Resources> {
-        val resources = TileBuilders.Resources.Builder()
+    override fun onTileResourcesRequest(requestParams: androidx.wear.tiles.TileBuilders.ResourcesRequest): ListenableFuture<androidx.wear.tiles.ResourceBuilders.Resources> {
+        val resources = androidx.wear.tiles.ResourceBuilders.Resources.Builder()
             .setVersion(RESOURCES_VERSION)
             .build()
 
         return Futures.immediateFuture(resources)
     }
 
-    private fun buildTileLayout(statusText: String, modeText: String, deviceParams: DeviceParameters): LayoutElementBuilders.LayoutElement {
+    private fun buildTileLayout(statusText: String, modeText: String, deviceParams: DeviceParametersBuilders.DeviceParameters): LayoutElementBuilders.LayoutElement {
         return PrimaryLayout.Builder(deviceParams)
-            .setClickable(
-                LayoutElementBuilders.Clickable.Builder()
-                    .setOnClick(
-                        LayoutElementBuilders.Action.Builder()
-                            .setLaunchAction(
-                                LayoutElementBuilders.LaunchAction.Builder()
-                                    .setAndroidActivity(
-                                        LayoutElementBuilders.AndroidActivity.Builder()
-                                            .setClassName("me.kavishdevar.librepods.MainActivity")
-                                            .setPackageName("me.kavishdevar.librepods.wear")
-                                            .build()
-                                    )
-                                    .build()
-                            )
-                            .build()
-                    )
-                    .build()
-            )
             .setContent(
                 LayoutElementBuilders.Column.Builder()
                     .addContent(
-                        Text.Builder(this, statusText)
+                        Text.Builder()
+                            .setText(statusText)
                             .setColor(LayoutElementBuilders.ColorBuilders.argb(0xFFFFFFFF.toInt()))
                             .build()
                     )
                     .addContent(
-                        Text.Builder(this, modeText)
+                        Text.Builder()
+                            .setText(modeText)
                             .setColor(LayoutElementBuilders.ColorBuilders.argb(0xFFAAAAAA.toInt()))
                             .build()
                     )

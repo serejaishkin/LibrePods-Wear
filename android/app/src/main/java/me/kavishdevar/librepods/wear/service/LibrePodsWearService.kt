@@ -27,6 +27,7 @@ import me.kavishdevar.librepods.wear.bluetooth.WearBluetoothConnection
 import me.kavishdevar.librepods.wear.bluetooth.WearBluetoothScanner
 import me.kavishdevar.librepods.wear.core.AirPodsController
 import me.kavishdevar.librepods.wear.core.AirPodsState
+import me.kavishdevar.librepods.wear.core.AirPodsStateStore
 
 /**
  * Owner of the autonomous AirPods stack on the watch.
