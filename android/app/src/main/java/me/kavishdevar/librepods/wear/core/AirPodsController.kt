@@ -130,15 +130,44 @@ class AirPodsController(private val context: Context, private val transport: Wea
     @SuppressLint("MissingPermission")
     private suspend fun connectTransport(device: BluetoothDevice) {
         try {
-            internalStateStore.update { it.copy(protocolStage = "L2CAP") }; transport.connectAacp(device)
+            Log.i(tag, "connectTransport: starting L2CAP connection to ${device.address}")
+            internalStateStore.update { it.copy(protocolStage = "L2CAP") }
+            transport.connectAacp(device)
+            Log.i(tag, "connectTransport: L2CAP connected, starting AACP reader")
+            
             val manager = aacp ?: error("AACP manager is not initialized")
-            startAacpReader(manager); check(manager.startSession()) { "AACP handshake could not be sent" }
-            internalStateStore.update { it.copy(protocolStage = "HANDSHAKE_SENT", connecting = true, connected = false) }
-            readyWatchJob?.cancel(); readyWatchJob = scope.launch {
-                repeat(50) { delay(100); if (manager.sessionState == AACPManager.SessionState.READY) { internalStateStore.update { it.copy(protocolStage = "READY", connecting = false, connected = true, lastError = null) }; refreshState(); initializeAtt(); return@launch } }
-                if (manager.sessionState != AACPManager.SessionState.READY) onError("AACP handshake timeout (${manager.sessionState})")
+            startAacpReader(manager)
+            
+            if (!manager.startSession()) {
+                onError("AACP handshake could not be sent")
+                runCatching { transport.close() }
+                return
             }
-        } catch (e: Throwable) { onError("AACP connection failed: ${e.message ?: e.javaClass.simpleName}", e); runCatching { transport.close() } }
+            
+            internalStateStore.update { it.copy(protocolStage = "HANDSHAKE_SENT", connecting = true, connected = false) }
+            Log.i(tag, "connectTransport: handshake sent, waiting for READY state")
+            
+            readyWatchJob?.cancel()
+            readyWatchJob = scope.launch {
+                repeat(50) {
+                    delay(100)
+                    if (manager.sessionState == AACPManager.SessionState.READY) {
+                        Log.i(tag, "connectTransport: session READY")
+                        internalStateStore.update { it.copy(protocolStage = "READY", connecting = false, connected = true, lastError = null) }
+                        refreshState()
+                        initializeAtt()
+                        return@launch
+                    }
+                }
+                if (manager.sessionState != AACPManager.SessionState.READY) {
+                    onError("AACP handshake timeout (${manager.sessionState})")
+                }
+            }
+        } catch (e: Throwable) {
+            Log.e(tag, "connectTransport failed: ${e.javaClass.simpleName}: ${e.message}", e)
+            onError("AACP connection failed: ${e.javaClass.simpleName}: ${e.message ?: "unknown error"}", e)
+            runCatching { transport.close() }
+        }
     }
     
     private fun initializeAtt() {

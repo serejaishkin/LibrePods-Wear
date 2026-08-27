@@ -8,6 +8,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
@@ -43,6 +46,27 @@ fun AirPodsHomeScreen(
     val state by controller.state.collectAsState()
     val devices by scanner.devices.collectAsState()
     val listState = rememberScalingLazyListState()
+    var showRenameDialog by remember { mutableStateOf(false) }
+
+    if (showRenameDialog) {
+        MaterialTheme {
+            AppScaffold {
+                ScreenScaffold {
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+                        RenameAirPodsDialog(
+                            currentName = state.deviceName,
+                            onRename = { newName ->
+                                if (!controller.renameAirPods(newName)) controller.onError("Failed to rename AirPods")
+                                showRenameDialog = false
+                            },
+                            onDismiss = { showRenameDialog = false },
+                        )
+                    }
+                }
+            }
+        }
+        return
+    }
 
     MaterialTheme {
         AppScaffold {
@@ -101,7 +125,7 @@ fun AirPodsHomeScreen(
                         }
                     }
                     item {
-                        Button(onClick = { /* TODO: Show rename dialog */ }, modifier = Modifier.fillMaxWidth()) {
+                        Button(onClick = { showRenameDialog = true }, modifier = Modifier.fillMaxWidth()) {
                             Text("Rename AirPods")
                         }
                     }
@@ -358,9 +382,14 @@ private fun ScalingLazyListScope.gestureControlItems(
             }
         }
     }
+    item {
+        ToggleRow("Single press answers call", state.callManagementConfig == 1) { enabled ->
+            if (!controller.setCallManagement(if (enabled) 1 else 0)) {
+                controller.onError("Failed to set call management")
+            }
+        }
+    }
 }
-
-/** Advanced settings: volumes, gestures, etc. */
 private fun ScalingLazyListScope.advancedSettingsItems(
     state: AirPodsState,
     controller: AirPodsController,

@@ -2,16 +2,15 @@ package me.kavishdevar.librepods.wear.tiles
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.wear.protolayout.LayoutElementBuilders
 import androidx.wear.protolayout.ResourceBuilders
-import androidx.wear.tiles.ColorBuilders
+import androidx.wear.protolayout.TimelineBuilders
+import androidx.wear.protolayout.ColorBuilders
+import androidx.wear.protolayout.DimensionBuilders
 import androidx.wear.tiles.DeviceParametersBuilders
-import androidx.wear.tiles.LayoutElementBuilders
 import androidx.wear.tiles.RequestBuilders
 import androidx.wear.tiles.TileBuilders
 import androidx.wear.tiles.TileService
-import androidx.wear.tiles.TimelineBuilders
-import androidx.wear.tiles.material.Text
-import androidx.wear.tiles.material.layouts.PrimaryLayout
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 
@@ -25,7 +24,8 @@ class AirPodsTileService : TileService() {
     }
 
     override fun onTileRequest(requestParams: RequestBuilders.TileRequest): ListenableFuture<TileBuilders.Tile> {
-        val deviceParams = requestParams.deviceParameters ?: DeviceParametersBuilders.DeviceParameters.Builder().build()
+        val deviceParams = requestParams.deviceParameters
+            ?: DeviceParametersBuilders.DeviceParameters.Builder().build()
 
         val connected = prefs.getBoolean("connected", false)
         val connecting = prefs.getBoolean("connecting", false)
@@ -63,9 +63,7 @@ class AirPodsTileService : TileService() {
                         TimelineBuilders.TimelineEntry.Builder()
                             .setLayout(
                                 LayoutElementBuilders.Layout.Builder()
-                                    .setRoot(
-                                        buildTileLayout(statusText, modeText, deviceParams)
-                                    )
+                                    .setRoot(buildTileLayout(statusText, modeText))
                                     .build()
                             )
                             .build()
@@ -77,7 +75,9 @@ class AirPodsTileService : TileService() {
         return Futures.immediateFuture(tile)
     }
 
-    override fun onTileResourcesRequest(requestParams: RequestBuilders.ResourcesRequest): ListenableFuture<ResourceBuilders.Resources> {
+    override fun onTileResourcesRequest(
+        requestParams: RequestBuilders.ResourcesRequest
+    ): ListenableFuture<ResourceBuilders.Resources> {
         val resources = ResourceBuilders.Resources.Builder()
             .setVersion(RESOURCES_VERSION)
             .build()
@@ -87,24 +87,64 @@ class AirPodsTileService : TileService() {
 
     private fun buildTileLayout(
         statusText: String,
-        modeText: String,
-        deviceParams: DeviceParametersBuilders.DeviceParameters
+        modeText: String
     ): LayoutElementBuilders.LayoutElement {
-        return PrimaryLayout.Builder(deviceParams)
-            .setContent(
-                LayoutElementBuilders.Column.Builder()
-                    .addContent(
-                        Text.Builder(this, statusText)
-                            .setColor(ColorBuilders.argb(0xFFFFFFFF.toInt()))
-                            .build()
-                    )
-                    .addContent(
-                        Text.Builder(this, modeText)
-                            .setColor(ColorBuilders.argb(0xFFAAAAAA.toInt()))
+        val columnChildren = mutableListOf<LayoutElementBuilders.LayoutElement>()
+
+        columnChildren.add(
+            LayoutElementBuilders.Text.Builder()
+                .setText(statusText)
+                .setFontStyle(
+                    LayoutElementBuilders.FontStyle.Builder()
+                        .setColor(
+                            ColorBuilders.propType(
+                                ColorBuilders.ColorProp.Builder()
+                                    .setArgb(0xFFFFFFFF.toInt())
+                                    .build()
+                            )
+                        )
+                        .setSize(
+                            DimensionBuilders.prop(
+                                DimensionBuilders.SpProp.Builder()
+                                    .setValue(20f)
+                                    .build()
+                            )
+                        )
+                        .build()
+                )
+                .build()
+        )
+
+        if (modeText.isNotEmpty()) {
+            columnChildren.add(
+                LayoutElementBuilders.Text.Builder()
+                    .setText(modeText)
+                    .setFontStyle(
+                        LayoutElementBuilders.FontStyle.Builder()
+                            .setColor(
+                                ColorBuilders.propType(
+                                    ColorBuilders.ColorProp.Builder()
+                                        .setArgb(0xFFAAAAAA.toInt())
+                                        .build()
+                                )
+                            )
+                            .setSize(
+                                DimensionBuilders.prop(
+                                    DimensionBuilders.SpProp.Builder()
+                                        .setValue(14f)
+                                        .build()
+                                )
+                            )
                             .build()
                     )
                     .build()
             )
+        }
+
+        return LayoutElementBuilders.Column.Builder()
+            .addContent(*columnChildren.toTypedArray())
+            .setWidth(DimensionBuilders.ExpandedDimensionProp.Builder().build())
+            .setHeight(DimensionBuilders.ExpandedDimensionProp.Builder().build())
             .build()
     }
 
