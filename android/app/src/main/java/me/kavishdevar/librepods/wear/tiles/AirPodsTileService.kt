@@ -2,11 +2,11 @@ package me.kavishdevar.librepods.wear.tiles
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.wear.protolayout.ResourceBuilders
+import androidx.wear.tiles.ColorBuilders
 import androidx.wear.tiles.DeviceParametersBuilders
 import androidx.wear.tiles.LayoutElementBuilders
-import androidx.wear.tiles.LayoutElementBuilders.ColorProp
 import androidx.wear.tiles.RequestBuilders
-import androidx.wear.tiles.ResourceBuilders
 import androidx.wear.tiles.TileBuilders
 import androidx.wear.tiles.TileService
 import androidx.wear.tiles.TimelineBuilders
@@ -95,12 +95,12 @@ class AirPodsTileService : TileService() {
                 LayoutElementBuilders.Column.Builder()
                     .addContent(
                         Text.Builder(this, statusText)
-                            .setColor(ColorProp.Builder(0xFFFFFFFF.toInt()).build())
+                            .setColor(ColorBuilders.argb(0xFFFFFFFF.toInt()))
                             .build()
                     )
                     .addContent(
                         Text.Builder(this, modeText)
-                            .setColor(ColorProp.Builder(0xFFAAAAAA.toInt()).build())
+                            .setColor(ColorBuilders.argb(0xFFAAAAAA.toInt()))
                             .build()
                     )
                     .build()
