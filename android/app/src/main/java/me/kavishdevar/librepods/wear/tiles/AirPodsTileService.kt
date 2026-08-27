@@ -2,15 +2,16 @@ package me.kavishdevar.librepods.wear.tiles
 
 import android.content.Context
 import android.content.SharedPreferences
-import androidx.wear.protolayout.LayoutElementBuilders
-import androidx.wear.protolayout.ResourceBuilders
-import androidx.wear.protolayout.TimelineBuilders
-import androidx.wear.protolayout.ColorBuilders
-import androidx.wear.protolayout.DimensionBuilders
-import androidx.wear.tiles.DeviceParametersBuilders
+import androidx.wear.tiles.ColorBuilders.argb
+import androidx.wear.tiles.DimensionBuilders
+import androidx.wear.tiles.LayoutElementBuilders.Column
+import androidx.wear.tiles.LayoutElementBuilders.FontStyle
+import androidx.wear.tiles.LayoutElementBuilders.Layout
+import androidx.wear.tiles.LayoutElementBuilders.Text
 import androidx.wear.tiles.RequestBuilders
 import androidx.wear.tiles.TileBuilders
 import androidx.wear.tiles.TileService
+import androidx.wear.tiles.TimelineBuilders
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 
@@ -24,9 +25,6 @@ class AirPodsTileService : TileService() {
     }
 
     override fun onTileRequest(requestParams: RequestBuilders.TileRequest): ListenableFuture<TileBuilders.Tile> {
-        val deviceParams = requestParams.deviceParameters
-            ?: DeviceParametersBuilders.DeviceParameters.Builder().build()
-
         val connected = prefs.getBoolean("connected", false)
         val connecting = prefs.getBoolean("connecting", false)
         val listeningMode = prefs.getString("listening_mode", null)
@@ -41,7 +39,6 @@ class AirPodsTileService : TileService() {
                     rightBattery.takeIf { it in 0..100 },
                     caseBattery.takeIf { it in 0..100 }
                 ).average().let { if (it.isNaN()) null else it.toInt() }
-
                 if (battery != null) "Connected: $battery%" else "Connected"
             }
             connecting -> "Connecting..."
@@ -55,6 +52,35 @@ class AirPodsTileService : TileService() {
             else -> ""
         }
 
+        val titleElement = Text.Builder()
+            .setText(statusText)
+            .setFontStyle(
+                FontStyle.Builder()
+                    .setColor(argb(0xFFFFFFFF.toInt()))
+                    .setSize(DimensionBuilders.sp(20f))
+                    .build()
+            )
+            .build()
+
+        val columnBuilder = Column.Builder()
+            .addContent(titleElement)
+            .setWidth(DimensionBuilders.expand())
+            .setHeight(DimensionBuilders.expand())
+
+        if (modeText.isNotEmpty()) {
+            columnBuilder.addContent(
+                Text.Builder()
+                    .setText(modeText)
+                    .setFontStyle(
+                        FontStyle.Builder()
+                            .setColor(argb(0xFFAAAAAA.toInt()))
+                            .setSize(DimensionBuilders.sp(14f))
+                            .build()
+                    )
+                    .build()
+            )
+        }
+
         val tile = TileBuilders.Tile.Builder()
             .setResourcesVersion(RESOURCES_VERSION)
             .setTimeline(
@@ -62,8 +88,8 @@ class AirPodsTileService : TileService() {
                     .addTimelineEntry(
                         TimelineBuilders.TimelineEntry.Builder()
                             .setLayout(
-                                LayoutElementBuilders.Layout.Builder()
-                                    .setRoot(buildTileLayout(statusText, modeText))
+                                Layout.Builder()
+                                    .setRoot(columnBuilder.build())
                                     .build()
                             )
                             .build()
@@ -77,75 +103,11 @@ class AirPodsTileService : TileService() {
 
     override fun onTileResourcesRequest(
         requestParams: RequestBuilders.ResourcesRequest
-    ): ListenableFuture<ResourceBuilders.Resources> {
-        val resources = ResourceBuilders.Resources.Builder()
+    ): ListenableFuture<androidx.wear.protolayout.ResourceBuilders.Resources> {
+        val resources = androidx.wear.protolayout.ResourceBuilders.Resources.Builder()
             .setVersion(RESOURCES_VERSION)
             .build()
-
         return Futures.immediateFuture(resources)
-    }
-
-    private fun buildTileLayout(
-        statusText: String,
-        modeText: String
-    ): LayoutElementBuilders.LayoutElement {
-        val columnChildren = mutableListOf<LayoutElementBuilders.LayoutElement>()
-
-        columnChildren.add(
-            LayoutElementBuilders.Text.Builder()
-                .setText(statusText)
-                .setFontStyle(
-                    LayoutElementBuilders.FontStyle.Builder()
-                        .setColor(
-                            ColorBuilders.propType(
-                                ColorBuilders.ColorProp.Builder()
-                                    .setArgb(0xFFFFFFFF.toInt())
-                                    .build()
-                            )
-                        )
-                        .setSize(
-                            DimensionBuilders.prop(
-                                DimensionBuilders.SpProp.Builder()
-                                    .setValue(20f)
-                                    .build()
-                            )
-                        )
-                        .build()
-                )
-                .build()
-        )
-
-        if (modeText.isNotEmpty()) {
-            columnChildren.add(
-                LayoutElementBuilders.Text.Builder()
-                    .setText(modeText)
-                    .setFontStyle(
-                        LayoutElementBuilders.FontStyle.Builder()
-                            .setColor(
-                                ColorBuilders.propType(
-                                    ColorBuilders.ColorProp.Builder()
-                                        .setArgb(0xFFAAAAAA.toInt())
-                                        .build()
-                                )
-                            )
-                            .setSize(
-                                DimensionBuilders.prop(
-                                    DimensionBuilders.SpProp.Builder()
-                                        .setValue(14f)
-                                        .build()
-                                )
-                            )
-                            .build()
-                    )
-                    .build()
-            )
-        }
-
-        return LayoutElementBuilders.Column.Builder()
-            .addContent(*columnChildren.toTypedArray())
-            .setWidth(DimensionBuilders.ExpandedDimensionProp.Builder().build())
-            .setHeight(DimensionBuilders.ExpandedDimensionProp.Builder().build())
-            .build()
     }
 
     companion object {
