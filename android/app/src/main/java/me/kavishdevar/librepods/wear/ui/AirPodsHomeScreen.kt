@@ -97,7 +97,7 @@ fun AirPodsHomeScreen(
                     item { EarStatusText(state) }
                     infoItems(state)
                     item {
-                        Button(onClick = { state.address?.let { addr -> controller.connectToDevice(addr, state.deviceName) } }, modifier = Modifier.fillMaxWidth()) {
+                        Button(onClick = { controller.tryAacpConnect() }, modifier = Modifier.fillMaxWidth()) {
                             Text("Try AACP connect")
                         }
                     }

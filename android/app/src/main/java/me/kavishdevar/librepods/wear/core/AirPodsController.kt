@@ -47,6 +47,8 @@ class AirPodsController(private val context: Context, private val transport: Wea
     private val connectMutex = Mutex()
     private var lastConnectAttempt: Long = 0
     private val CONNECT_COOLDOWN_MS = 3000L
+    private val gattBatteryReader = BLEGattBatteryReader(context)
+    private var gattPollJob: Job? = null
 
     private val bleListener = object : BLEManager.AirPodsStatusListener {
         override fun onDeviceStatusChanged(device: BLEManager.AirPodsStatus, previousStatus: BLEManager.AirPodsStatus?) = applyBleStatus(device)
@@ -123,37 +125,121 @@ class AirPodsController(private val context: Context, private val transport: Wea
         }
     }
 
-    @SuppressLint("MissingPermission")
-    fun connectToDevice(address: String, name: String = "AirPods"): Boolean {
+  @SuppressLint("MissingPermission")
+    fun connectToDevice(address: String, name: String = "AirPods", tryAacp: Boolean = false): Boolean {
         val now = System.currentTimeMillis()
-        if (now - lastConnectAttempt < CONNECT_COOLDOWN_MS) {
+        if (tryAacp && now - lastConnectAttempt < CONNECT_COOLDOWN_MS) {
             Log.w(tag, "connectToDevice: cooldown active, skipping (${(CONNECT_COOLDOWN_MS - (now - lastConnectAttempt))}ms remaining)")
             return false
         }
-        lastConnectAttempt = now
-        manualDisconnect = false; reconnectJob?.cancel(); markConnecting()
+        if (tryAacp) lastConnectAttempt = now
+        manualDisconnect = false
+        reconnectJob?.cancel()
         return try {
             val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter ?: return fail("Bluetooth is unavailable")
             if (!adapter.isEnabled) return fail("Bluetooth is disabled")
-            val device = adapter.getRemoteDevice(address); connectedDevice = device
+            val device = adapter.getRemoteDevice(address)
+            connectedDevice = device
             prefs.edit()
                 .putString("selected_address", address)
                 .putString("selected_name", name)
                 .putString("last_connected_address", address)
                 .putString("last_connected_name", name)
                 .apply()
-            internalStateStore.update { it.copy(deviceName = name, address = address, connecting = true, connected = false, protocolStage = "CONNECTING", lastError = null) }
-            scope.launch { connectTransport(device) }; true
-        } catch (e: SecurityException) { fail("Bluetooth permission is required", e) } catch (e: IllegalArgumentException) { fail("Invalid Bluetooth device", e) }
+            connectBondedBleMode(address, name)
+            if (tryAacp) {
+                markConnecting()
+                scope.launch { connectTransport(device) }
+            }
+            true
+        } catch (e: SecurityException) {
+            fail("Bluetooth permission is required", e)
+        } catch (e: IllegalArgumentException) {
+            fail("Invalid Bluetooth device", e)
+        }
+    }
+
+    /** Connect to a paired device using BLE scan + GATT without attempting L2CAP/AACP. */
+    @SuppressLint("MissingPermission")
+    fun connectBondedBleMode(address: String, name: String = "AirPods"): Boolean {
+        manualDisconnect = false
+        reconnectJob?.cancel()
+        internalStateStore.update {
+            it.copy(
+                deviceName = name,
+                address = address,
+                connecting = false,
+                connected = true,
+                protocolStage = "BLE_ONLY",
+                lastError = null,
+            )
+        }
+        // #region agent log
+        Log.i(tag, "DEBUG341ec7 hypothesis=E bonded_ble_mode address=$address name=$name")
+        // #endregion
+        startGattBatteryPolling(address)
+        return true
+    }
+
+    /** Explicit AACP/L2CAP connect — only call from the UI button, not on auto-connect. */
+    @SuppressLint("MissingPermission")
+    fun tryAacpConnect(): Boolean {
+        val address = internalStateStore.state.value.address ?: connectedDevice?.address ?: return false
+        val name = internalStateStore.state.value.deviceName
+        return connectToDevice(address, name, tryAacp = true)
+    }
+
+    private fun startGattBatteryPolling(address: String) {
+        gattPollJob?.cancel()
+        gattPollJob = scope.launch {
+            while (!manualDisconnect) {
+                readGattBatteryOnce(address)
+                delay(60_000)
+            }
+        }
+    }
+
+    private suspend fun readGattBatteryOnce(address: String) {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        gattBatteryReader.readBattery(address, object : BLEGattBatteryReader.BatteryCallback {
+            override fun onBatteryRead(left: Int?, right: Int?, case: Int?) {
+                applyGattBattery(left, right, case, address)
+                latch.countDown()
+            }
+
+            override fun onReadFailed(reason: String) {
+                Log.w(tag, "GATT battery read failed for $address: $reason")
+                latch.countDown()
+            }
+        })
+        latch.await()
+    }
+
+    private fun applyGattBattery(left: Int?, right: Int?, case: Int?, address: String) {
+        val hasBattery = left != null || right != null || case != null
+        if (!hasBattery) return
+        internalStateStore.update {
+            it.copy(
+                address = address,
+                leftBattery = left ?: it.leftBattery,
+                rightBattery = right ?: it.rightBattery,
+                caseBattery = case ?: it.caseBattery,
+                connected = true,
+                connecting = false,
+                protocolStage = if (it.protocolStage == "READY") "READY" else "BLE_ONLY",
+                lastError = null,
+            )
+        }
+        persistTileState()
     }
 
     @SuppressLint("MissingPermission")
     fun connectToBondedAirPods(): Boolean {
         val saved = prefs.getString("selected_address", null)
-        if (saved != null) return connectToDevice(saved, prefs.getString("selected_name", "AirPods") ?: "AirPods")
+        if (saved != null) return connectBondedBleMode(saved, prefs.getString("selected_name", "AirPods") ?: "AirPods")
         val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter
         val device = adapter?.bondedDevices?.firstOrNull { it.name.orEmpty().contains("AirPods", true) || it.name.orEmpty().contains("Pods", true) } ?: return fail("No paired AirPods found")
-        return connectToDevice(device.address, device.name ?: "AirPods")
+        return connectBondedBleMode(device.address, device.name ?: "AirPods")
     }
 
     @SuppressLint("MissingPermission")
@@ -161,6 +247,9 @@ class AirPodsController(private val context: Context, private val transport: Wea
         connectMutex.withLock {
             try {
                 Log.i(tag, "connectTransport: starting L2CAP connection to ${device.address}")
+                // #region agent log
+                Log.i(tag, "DEBUG341ec7 hypothesis=A l2cap_start address=${device.address}")
+                // #endregion
                 internalStateStore.update { it.copy(protocolStage = "L2CAP") }
                 transport.connectAacp(device)
                 Log.i(tag, "connectTransport: L2CAP connected, starting AACP reader")
@@ -457,14 +546,19 @@ class AirPodsController(private val context: Context, private val transport: Wea
     
     fun autoConnect() {
         scope.launch {
-            delay(2000) // Wait for system to settle after boot
+            delay(2000)
             val lastConnectedAddress = prefs.getString("last_connected_address", null)
             val lastConnectedName = prefs.getString("last_connected_name", "AirPods")
-            
             if (lastConnectedAddress != null) {
-                connectToDevice(lastConnectedAddress, lastConnectedName ?: "AirPods")
-            } else {
-                connectToBondedAirPods()
+                connectBondedBleMode(lastConnectedAddress, lastConnectedName ?: "AirPods")
+                return@launch
+            }
+            val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter
+            val device = adapter?.bondedDevices?.firstOrNull {
+                it.name.orEmpty().contains("AirPods", true) || it.name.orEmpty().contains("Pods", true)
+            }
+            if (device != null) {
+                connectBondedBleMode(device.address, device.name ?: "AirPods")
             }
         }
     }
@@ -620,11 +714,16 @@ class AirPodsController(private val context: Context, private val transport: Wea
         Log.e(tag, message, cause)
         internalStateStore.update {
             val hasBle = it.leftBattery != null || it.rightBattery != null || it.caseBattery != null
+            val keepBleOnly = it.protocolStage == "BLE_ONLY" && hasBle
             it.copy(
                 connecting = false,
-                connected = hasBle,
-                protocolStage = if (hasBle) "BLE_ONLY" else "FAILED",
-                lastError = if (hasBle) null else message,
+                connected = hasBle || it.protocolStage == "BLE_ONLY",
+                protocolStage = when {
+                    keepBleOnly -> "BLE_ONLY"
+                    hasBle -> "BLE_ONLY"
+                    else -> "FAILED"
+                },
+                lastError = if (hasBle || it.protocolStage == "BLE_ONLY") null else message,
             )
         }
     }
@@ -644,6 +743,7 @@ class AirPodsController(private val context: Context, private val transport: Wea
     fun disconnect() {
         manualDisconnect = true; connectedDevice = null; reconnectJob?.cancel(); reconnectJob = null
         readyWatchJob?.cancel(); readyWatchJob = null; aacpReaderJob?.cancel(); aacpReaderJob = null
+        gattPollJob?.cancel(); gattPollJob = null; gattBatteryReader.cleanup()
         runCatching { transport.close() }; aacp?.unbindTransport()
         internalStateStore.update {
             val hasBle = it.leftBattery != null || it.rightBattery != null || it.caseBattery != null
@@ -654,5 +754,14 @@ class AirPodsController(private val context: Context, private val transport: Wea
             )
         }
     }
-    fun shutdown() { disconnect(); runCatching { ble?.stopScanning() }; aacp?.unbindTransport(); scope.cancel(); aacp = null; ble = null; internalStateStore.reset() }
+    fun shutdown() {
+        disconnect()
+        runCatching { ble?.stopScanning() }
+        gattBatteryReader.cleanup()
+        aacp?.unbindTransport()
+        scope.cancel()
+        aacp = null
+        ble = null
+        internalStateStore.reset()
+    }
 }

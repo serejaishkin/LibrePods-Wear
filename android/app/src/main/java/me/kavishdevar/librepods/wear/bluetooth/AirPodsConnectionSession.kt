@@ -158,6 +158,13 @@ class AirPodsConnectionSession(
         // Try the public L2CAP channel API first (API 29+)
         if (psm == AACP_PSM) {
             runCatching {
+                val socket = device.createInsecureL2capChannel(psm)
+                Log.d(TAG, "Using public createInsecureL2capChannel for PSM 0x${psm.toString(16)}")
+                return socket
+            }.onFailure {
+                Log.d(TAG, "Insecure L2CAP channel API failed: ${it.javaClass.simpleName}: ${it.message}")
+            }
+            runCatching {
                 val socket = device.createL2capChannel(psm)
                 Log.d(TAG, "Using public createL2capChannel for PSM 0x${psm.toString(16)}")
                 return socket
