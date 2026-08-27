@@ -83,7 +83,30 @@ fun AirPodsHomeScreen(
                     item { BatteryRow(state) }
                 }
 
-                if (state.connected) {
+                if (state.connected && state.protocolStage == "BLE_ONLY") {
+                    item {
+                        Text(
+                            "L2CAP unavailable – settings require AACP connection",
+                            style = MaterialTheme.typography.labelSmall,
+                            textAlign = TextAlign.Center,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                        )
+                    }
+                    item { EarStatusText(state) }
+                    infoItems(state)
+                    item {
+                        Button(onClick = { state.address?.let { addr -> controller.connectToDevice(addr, state.deviceName) } }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Try AACP connect")
+                        }
+                    }
+                    item {
+                        Button(onClick = { controller.disconnect() }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Disconnect")
+                        }
+                    }
+                } else if (state.connected) {
                     item {
                         ListeningModeRow(selected = state.listeningMode) { mode ->
                             if (!controller.setListeningMode(mode)) controller.onError("Failed to set listening mode")
@@ -455,6 +478,7 @@ private fun ScalingLazyListScope.deviceItems(
 private fun StatusText(state: AirPodsState) {
     val status = when {
         state.connecting -> "Connecting… (${state.protocolStage})"
+        state.connected && state.protocolStage == "BLE_ONLY" -> "BLE connected"
         state.connected -> "Connected"
         state.lastError != null -> state.lastError
         else -> "Not connected"

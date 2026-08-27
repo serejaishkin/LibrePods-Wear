@@ -52,7 +52,6 @@ class AirPodsConnectionSession(
         closeSockets()
 
         try {
-            adapter.cancelDiscovery()
             val socket = createL2capSocket(device, AACP_UUID, AACP_PSM)
             Log.d(TAG, "Socket created, attempting connect() to ${device.address} on PSM 0x${AACP_PSM.toString(16)}")
             socket.connect()

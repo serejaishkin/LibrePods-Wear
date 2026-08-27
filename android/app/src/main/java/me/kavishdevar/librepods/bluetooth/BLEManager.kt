@@ -153,28 +153,18 @@ class BLEManager(private val context: Context) {
                 .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
                 .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
                 .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
-                .setReportDelay(500L)
-                .build()
-
-            val manufacturerData = ByteArray(27)
-            val manufacturerDataMask = ByteArray(27)
-
-            manufacturerData[0] = 7
-            manufacturerData[1] = 25
-
-            manufacturerDataMask[0] = -1
-            manufacturerDataMask[1] = -1
-
-            val scanFilter = ScanFilter.Builder()
-                .setManufacturerData(76, manufacturerData, manufacturerDataMask)
                 .build()
 
             mScanCallback = object : ScanCallback() {
                 override fun onScanResult(callbackType: Int, result: ScanResult) {
+                    val mfrData = result.scanRecord?.getManufacturerSpecificData(76)
+                    val hex = mfrData?.joinToString("") { String.format("%02X", it) } ?: "null"
+                    Log.d(TAG, "onScanResult: ${result.device.address} rssi=${result.rssi} mfr=$hex")
                     processScanResult(result)
                 }
 
                 override fun onBatchScanResults(results: List<ScanResult>) {
+                    Log.d(TAG, "onBatchScanResults: ${results.size} results")
                     processedAddresses.clear()
                     for (result in results) {
                         processScanResult(result)
@@ -186,8 +176,8 @@ class BLEManager(private val context: Context) {
                 }
             }
 
-            mBluetoothLeScanner?.startScan(listOf(scanFilter), scanSettings, mScanCallback)
-            Log.d(TAG, "BLE scanner started successfully")
+            mBluetoothLeScanner?.startScan(null, scanSettings, mScanCallback)
+            Log.d(TAG, "BLE scanner started successfully (no filter)")
 
             cleanupHandler.postDelayed(cleanupRunnable, CLEANUP_INTERVAL_MS)
         } catch (t: Throwable) {
@@ -249,6 +239,7 @@ class BLEManager(private val context: Context) {
         return Pair(charging, level)
     }
 
+    @SuppressLint("MissingPermission")
     private fun processScanResult(result: ScanResult) {
         try {
             val scanRecord = result.scanRecord ?: return
@@ -263,11 +254,22 @@ class BLEManager(private val context: Context) {
 
             if (!verifiedAddresses.contains(address)) {
                 val irk = getIrkFromPreferences()
-                if (irk == null || !BluetoothCryptography.verifyRPA(address, irk)) {
-                    return
+                if (irk != null) {
+                    if (!BluetoothCryptography.verifyRPA(address, irk)) {
+                        return
+                    }
+                    verifiedAddresses.add(address)
+                    Log.d(TAG, "RPA verified and added to trusted list: $address")
+                } else {
+                    val btAdapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
+                    val bonded = btAdapter?.bondedDevices?.any { it.address == address } == true
+                    if (!bonded) {
+                        Log.d(TAG, "Skipping un bonded device $address (no IRK available)")
+                        return
+                    }
+                    verifiedAddresses.add(address)
+                    Log.d(TAG, "Bonded device accepted without IRK: $address")
                 }
-                verifiedAddresses.add(address)
-                Log.d(TAG, "RPA verified and added to trusted list: $address")
             }
 
             processedAddresses.add(address)

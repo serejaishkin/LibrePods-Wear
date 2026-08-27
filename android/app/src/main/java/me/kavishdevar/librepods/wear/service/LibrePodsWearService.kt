@@ -119,6 +119,11 @@ class LibrePodsWearService : Service() {
     private fun buildNotification(state: AirPodsState): Notification {
         val content = when {
             state.connecting -> "Connecting…"
+            state.connected && state.protocolStage == "BLE_ONLY" -> listOfNotNull(
+                state.leftBattery?.takeIf { it in 0..100 }?.let { "L $it%" },
+                state.rightBattery?.takeIf { it in 0..100 }?.let { "R $it%" },
+                state.caseBattery?.takeIf { it in 0..100 }?.let { "C $it%" },
+            ).joinToString(" · ").ifEmpty { "BLE only" }.let { "$it · no AACP" }
             state.connected -> listOfNotNull(
                 state.leftBattery?.takeIf { it in 0..100 }?.let { "L $it%" },
                 state.rightBattery?.takeIf { it in 0..100 }?.let { "R $it%" },
