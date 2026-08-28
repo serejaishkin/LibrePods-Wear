@@ -33,7 +33,6 @@ object AirPodsProtocolDiagnostics {
         val rightSerialNumber: String,
         val unknownNumericValue: String,
         val encryptedData: String?,
-        val additionalEncryptedData: String?,
     )
 
     enum class Component(val wireValue: Int) { HEADSET(0x01), RIGHT(0x02), LEFT(0x04), CASE(0x08), UNKNOWN(-1) }
@@ -77,22 +76,34 @@ object AirPodsProtocolDiagnostics {
     }
 
     /**
-     * Metadata strings are null-terminated UTF-8 values after opcode 0x1D.
-     * Only the documented fields are decoded; encrypted/opaque tail data is
-     * retained as a hex diagnostic value rather than interpreted.
+     * Metadata starts with a small non-string prefix after opcode 0x1D.
+     * We locate the first NUL followed by printable UTF-8 data, then decode
+     * the documented consecutive NUL-terminated fields. No encrypted tail is
+     * interpreted as text.
      */
     fun parseMetadata(packet: ByteArray): Metadata? {
         val frame = decode(packet) ?: return null
-        if (frame.opcode != 0x1D || frame.payload.isEmpty()) return null
+        if (frame.opcode != 0x1D || packet.size < 12) return null
 
-        val values = ArrayList<String>()
-        var start = 1 // skip the reserved byte following opcode
-        while (start < packet.size) {
-            val end = packet.indexOf(0.toByte(), start)
-            if (end < 0) break
-            values += packet.copyOfRange(start, end).toString(Charsets.UTF_8)
-            start = end + 1
-            if (values.size >= 11) break
+        var start = -1
+        for (index in 5 until packet.lastIndex) {
+            if (packet[index] == 0.toByte()) {
+                val next = packet[index + 1].toInt() and 0xFF
+                if (next in 0x20..0x7E) {
+                    start = index + 1
+                    break
+                }
+            }
+        }
+        if (start < 0) return null
+
+        val values = ArrayList<String>(11)
+        var cursor = start
+        while (cursor < packet.size && values.size < 11) {
+            val end = packet.indexOf(0.toByte(), cursor)
+            if (end < 0) return null
+            values += packet.copyOfRange(cursor, end).toString(Charsets.UTF_8)
+            cursor = end + 1
         }
         if (values.size < 11) return null
 
@@ -109,8 +120,7 @@ object AirPodsProtocolDiagnostics {
             leftSerialNumber = value(8),
             rightSerialNumber = value(9),
             unknownNumericValue = value(10),
-            encryptedData = if (start < packet.size) hex(packet.copyOfRange(start, packet.size)) else null,
-            additionalEncryptedData = null,
+            encryptedData = if (cursor < packet.size) hex(packet.copyOfRange(cursor, packet.size)) else null,
         )
     }
 
@@ -132,7 +142,6 @@ object AirPodsProtocolDiagnostics {
         return "opcode=${if (opcode == null) "UNKNOWN" else "0x%02X".format(opcode)} type=$type len=${packet.size} $details".trim()
     }
 
-    /** Ear-detection packets are fixed 8-byte AACP frames. 0x00 means in-ear. */
     fun parseEarDetection(packet: ByteArray): Pair<Boolean, Boolean>? {
         val frame = decode(packet) ?: return null
         if (frame.opcode != 0x06 || packet.size != 8) return null
