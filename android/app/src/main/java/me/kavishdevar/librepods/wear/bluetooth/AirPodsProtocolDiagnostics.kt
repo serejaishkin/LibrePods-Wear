@@ -20,6 +20,22 @@ object AirPodsProtocolDiagnostics {
         val connected: Boolean,
     )
 
+    data class Metadata(
+        val name: String,
+        val modelNumber: String,
+        val manufacturer: String,
+        val serialNumber: String,
+        val version1: String,
+        val version2: String,
+        val softwareVersion: String,
+        val updaterIdentifier: String,
+        val leftSerialNumber: String,
+        val rightSerialNumber: String,
+        val unknownNumericValue: String,
+        val encryptedData: String?,
+        val additionalEncryptedData: String?,
+    )
+
     enum class Component(val wireValue: Int) { HEADSET(0x01), RIGHT(0x02), LEFT(0x04), CASE(0x08), UNKNOWN(-1) }
 
     fun isHeader(packet: ByteArray): Boolean =
@@ -58,6 +74,62 @@ object AirPodsProtocolDiagnostics {
             )
         }
         return result
+    }
+
+    /**
+     * Metadata strings are null-terminated UTF-8 values after opcode 0x1D.
+     * Only the documented fields are decoded; encrypted/opaque tail data is
+     * retained as a hex diagnostic value rather than interpreted.
+     */
+    fun parseMetadata(packet: ByteArray): Metadata? {
+        val frame = decode(packet) ?: return null
+        if (frame.opcode != 0x1D || frame.payload.isEmpty()) return null
+
+        val values = ArrayList<String>()
+        var start = 1 // skip the reserved byte following opcode
+        while (start < packet.size) {
+            val end = packet.indexOf(0.toByte(), start)
+            if (end < 0) break
+            values += packet.copyOfRange(start, end).toString(Charsets.UTF_8)
+            start = end + 1
+            if (values.size >= 11) break
+        }
+        if (values.size < 11) return null
+
+        fun value(index: Int): String = values.getOrElse(index) { "" }
+        return Metadata(
+            name = value(0),
+            modelNumber = value(1),
+            manufacturer = value(2),
+            serialNumber = value(3),
+            version1 = value(4),
+            version2 = value(5),
+            softwareVersion = value(6),
+            updaterIdentifier = value(7),
+            leftSerialNumber = value(8),
+            rightSerialNumber = value(9),
+            unknownNumericValue = value(10),
+            encryptedData = if (start < packet.size) hex(packet.copyOfRange(start, packet.size)) else null,
+            additionalEncryptedData = null,
+        )
+    }
+
+    /** Human-readable, non-sensitive summary used only for debug logging. */
+    fun debugSummary(packet: ByteArray): String {
+        val frame = decode(packet)
+        val opcode = frame?.opcode
+        val type = opcodeName(opcode)
+        val details = when (opcode) {
+            0x04 -> parseBattery(packet)?.joinToString(",") { "${it.type.name}:level=${it.level},charging=${it.charging},connected=${it.connected}" }
+                ?: "parseError=battery"
+            0x06 -> parseEarDetection(packet)?.let { "leftInEar=${it.first},rightInEar=${it.second}" }
+                ?: "parseError=ear"
+            0x1D -> parseMetadata(packet)?.let { "name=${it.name},model=${it.modelNumber},mfr=${it.manufacturer},firmware=${it.version1}" }
+                ?: "parseError=metadata"
+            0x09 -> if (packet.size >= 8) "identifier=0x%02X,value=0x%02X".format(packet[6].toInt() and 0xFF, packet[7].toInt() and 0xFF) else "parseError=control"
+            else -> ""
+        }
+        return "opcode=${if (opcode == null) "UNKNOWN" else "0x%02X".format(opcode)} type=$type len=${packet.size} $details".trim()
     }
 
     /** Ear-detection packets are fixed 8-byte AACP frames. 0x00 means in-ear. */
