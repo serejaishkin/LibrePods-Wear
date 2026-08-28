@@ -111,6 +111,7 @@ class BLEManager(private val context: Context) {
     )
 
     private val cleanupHandler = Handler(Looper.getMainLooper())
+    private var isScanning = false
     private val cleanupRunnable = object : Runnable {
         override fun run() {
             cleanupStaleDevices()
@@ -147,6 +148,7 @@ class BLEManager(private val context: Context) {
             }
 
             mBluetoothLeScanner = btAdapter.bluetoothLeScanner
+            isScanning = true
 
             val scanSettings = ScanSettings.Builder()
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
@@ -157,6 +159,7 @@ class BLEManager(private val context: Context) {
 
             mScanCallback = object : ScanCallback() {
                 override fun onScanResult(callbackType: Int, result: ScanResult) {
+                    if (!isScanning) return
                     val mfrData = result.scanRecord?.getManufacturerSpecificData(76)
                     val hex = mfrData?.joinToString("") { String.format("%02X", it) } ?: "null"
                     Log.d(TAG, "onScanResult: ${result.device.address} rssi=${result.rssi} mfr=$hex")
@@ -164,6 +167,7 @@ class BLEManager(private val context: Context) {
                 }
 
                 override fun onBatchScanResults(results: List<ScanResult>) {
+                    if (!isScanning) return
                     Log.d(TAG, "onBatchScanResults: ${results.size} results")
                     processedAddresses.clear()
                     for (result in results) {
@@ -188,11 +192,13 @@ class BLEManager(private val context: Context) {
     @SuppressLint("MissingPermission")
     fun stopScanning() {
         try {
+            isScanning = false
             if (mBluetoothLeScanner != null && mScanCallback != null) {
                 Log.d(TAG, "Stopping BLE scanner")
                 mBluetoothLeScanner?.stopScan(mScanCallback)
                 mScanCallback = null
             }
+            mBluetoothLeScanner = null
 
             cleanupHandler.removeCallbacks(cleanupRunnable)
         } catch (t: Throwable) {

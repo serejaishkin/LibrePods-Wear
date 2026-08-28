@@ -111,6 +111,7 @@ class AirPodsController(private val context: Context, private val transport: Wea
         aacp = aacpManager; ble = bleManager
         aacpManager.bindTransport(transport); aacpManager.setPacketCallback(aacpCallback)
         bleManager.setAirPodsStatusListener(bleListener)
+        loadPersistedState()
         runCatching { bleManager.startScanning() }.onFailure { Log.w(tag, "BLE status scanner could not start", it) }
         scope.launch {
             while (true) {
@@ -130,7 +131,23 @@ class AirPodsController(private val context: Context, private val transport: Wea
         }
     }
 
-  @SuppressLint("MissingPermission")
+    private fun loadPersistedState() {
+        val left = prefs.getInt("left_battery", -1)
+        val right = prefs.getInt("right_battery", -1)
+        val caseB = prefs.getInt("case_battery", -1)
+        if (left != -1 || right != -1 || caseB != -1) {
+            internalStateStore.update {
+                it.copy(
+                    leftBattery = if (left != -1) left else null,
+                    rightBattery = if (right != -1) right else null,
+                    caseBattery = if (caseB != -1) caseB else null,
+                )
+            }
+            Log.i(tag, "Loaded persisted battery: L=$left R=$right Case=$caseB")
+}
+    }
+
+   @SuppressLint("MissingPermission")
     fun connectToDevice(address: String, name: String = "AirPods", tryAacp: Boolean = false): Boolean {
         val now = System.currentTimeMillis()
         if (tryAacp && now - lastConnectAttempt < CONNECT_COOLDOWN_MS) {
@@ -741,6 +758,7 @@ class AirPodsController(private val context: Context, private val transport: Wea
                                     protocolStage = if (it.protocolStage == "CLASSIC_CONNECTED") "CLASSIC_CONNECTED" else it.protocolStage,
                                 )
                             }
+                            persistTileState()
                         }
                     }
                 }
@@ -826,6 +844,7 @@ class AirPodsController(private val context: Context, private val transport: Wea
                 protocolStage = newStage,
             )
         }
+        if (hasBattery) persistTileState()
     }
     fun markConnecting() { internalStateStore.update { it.copy(connecting = true, lastError = null, protocolStage = "CONNECTING") } }
     fun onBattery(left: Int?, right: Int?, caseBattery: Int?) { internalStateStore.update { it.copy(leftBattery = left, rightBattery = right, caseBattery = caseBattery) } }
