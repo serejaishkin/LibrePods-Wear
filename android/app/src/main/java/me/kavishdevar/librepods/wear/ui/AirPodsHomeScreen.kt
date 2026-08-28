@@ -83,7 +83,30 @@ fun AirPodsHomeScreen(
                     item { BatteryRow(state) }
                 }
 
-                if (state.connected && state.protocolStage == "BLE_ONLY") {
+                if (state.connected && state.protocolStage == "CLASSIC_CONNECTED") {
+                    item {
+                        Text(
+                            "Connected via Bluetooth – L2CAP unavailable on Wear OS",
+                            style = MaterialTheme.typography.labelSmall,
+                            textAlign = TextAlign.Center,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                        )
+                    }
+                    item { EarStatusText(state) }
+                    infoItems(state)
+                    item {
+                        Button(onClick = { controller.tryAacpConnect() }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Try AACP (will fail)")
+                        }
+                    }
+                    item {
+                        Button(onClick = { controller.disconnect() }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Disconnect")
+                        }
+                    }
+                } else if (state.connected && state.protocolStage == "BLE_ONLY") {
                     item {
                         Text(
                             "L2CAP unavailable – settings require AACP connection",
@@ -478,6 +501,7 @@ private fun ScalingLazyListScope.deviceItems(
 private fun StatusText(state: AirPodsState) {
     val status = when {
         state.connecting -> "Connecting… (${state.protocolStage})"
+        state.connected && state.protocolStage == "CLASSIC_CONNECTED" -> "Connected via Bluetooth"
         state.connected && state.protocolStage == "BLE_ONLY" -> "BLE connected"
         state.connected -> "Connected"
         state.lastError != null -> state.lastError

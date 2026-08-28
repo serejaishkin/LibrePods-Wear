@@ -13,14 +13,7 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "0.1.0-wear-dev"
-        externalNativeBuild {
-            cmake {
-                arguments += "-DCMAKE_BUILD_TYPE=Release"
-            }
-        }
-        ndk {
-            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
-        }
+        // NDK/native build disabled – L2CAP broken on Wear OS
     }
 
     buildTypes {
@@ -46,13 +39,7 @@ android {
         compose = true
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-        }
-    }
-
-    ndkVersion = "27.0.12077973"
+    // NDK native build disabled – L2CAP broken on Wear OS
 }
 
 dependencies {

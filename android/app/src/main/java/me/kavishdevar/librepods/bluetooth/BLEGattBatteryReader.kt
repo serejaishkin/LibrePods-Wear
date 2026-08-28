@@ -225,7 +225,7 @@ class BLEGattBatteryReader(private val context: Context) {
             }
 
             val data = value ?: characteristic.value
-            if (data.isNullOrEmpty()) {
+            if (data == null || data.isEmpty()) {
                 tryNextTransportOrFail("Empty battery data")
                 return
             }
