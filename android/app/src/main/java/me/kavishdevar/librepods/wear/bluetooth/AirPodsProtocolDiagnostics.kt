@@ -20,6 +20,21 @@ object AirPodsProtocolDiagnostics {
         val connected: Boolean,
     )
 
+    data class Metadata(
+        val name: String,
+        val modelNumber: String,
+        val manufacturer: String,
+        val serialNumber: String,
+        val version1: String,
+        val version2: String,
+        val softwareVersion: String,
+        val updaterIdentifier: String,
+        val leftSerialNumber: String,
+        val rightSerialNumber: String,
+        val unknownNumericValue: String,
+        val encryptedData: String?,
+    )
+
     enum class Component(val wireValue: Int) { HEADSET(0x01), RIGHT(0x02), LEFT(0x04), CASE(0x08), UNKNOWN(-1) }
 
     fun isHeader(packet: ByteArray): Boolean =
@@ -60,7 +75,73 @@ object AirPodsProtocolDiagnostics {
         return result
     }
 
-    /** Ear-detection packets are fixed 8-byte AACP frames. 0x00 means in-ear. */
+    /**
+     * Metadata starts with a small non-string prefix after opcode 0x1D.
+     * We locate the first NUL followed by printable UTF-8 data, then decode
+     * the documented consecutive NUL-terminated fields. No encrypted tail is
+     * interpreted as text.
+     */
+    fun parseMetadata(packet: ByteArray): Metadata? {
+        val frame = decode(packet) ?: return null
+        if (frame.opcode != 0x1D || packet.size < 12) return null
+
+        var start = -1
+        for (index in 5 until packet.lastIndex) {
+            if (packet[index] == 0.toByte()) {
+                val next = packet[index + 1].toInt() and 0xFF
+                if (next in 0x20..0x7E) {
+                    start = index + 1
+                    break
+                }
+            }
+        }
+        if (start < 0) return null
+
+        val values = ArrayList<String>(11)
+        var cursor = start
+        while (cursor < packet.size && values.size < 11) {
+            val end = packet.indexOf(0.toByte(), cursor)
+            if (end < 0) return null
+            values += packet.copyOfRange(cursor, end).toString(Charsets.UTF_8)
+            cursor = end + 1
+        }
+        if (values.size < 11) return null
+
+        fun value(index: Int): String = values.getOrElse(index) { "" }
+        return Metadata(
+            name = value(0),
+            modelNumber = value(1),
+            manufacturer = value(2),
+            serialNumber = value(3),
+            version1 = value(4),
+            version2 = value(5),
+            softwareVersion = value(6),
+            updaterIdentifier = value(7),
+            leftSerialNumber = value(8),
+            rightSerialNumber = value(9),
+            unknownNumericValue = value(10),
+            encryptedData = if (cursor < packet.size) hex(packet.copyOfRange(cursor, packet.size)) else null,
+        )
+    }
+
+    /** Human-readable, non-sensitive summary used only for debug logging. */
+    fun debugSummary(packet: ByteArray): String {
+        val frame = decode(packet)
+        val opcode = frame?.opcode
+        val type = opcodeName(opcode)
+        val details = when (opcode) {
+            0x04 -> parseBattery(packet)?.joinToString(",") { "${it.type.name}:level=${it.level},charging=${it.charging},connected=${it.connected}" }
+                ?: "parseError=battery"
+            0x06 -> parseEarDetection(packet)?.let { "leftInEar=${it.first},rightInEar=${it.second}" }
+                ?: "parseError=ear"
+            0x1D -> parseMetadata(packet)?.let { "name=${it.name},model=${it.modelNumber},mfr=${it.manufacturer},firmware=${it.version1}" }
+                ?: "parseError=metadata"
+            0x09 -> if (packet.size >= 8) "identifier=0x%02X,value=0x%02X".format(packet[6].toInt() and 0xFF, packet[7].toInt() and 0xFF) else "parseError=control"
+            else -> ""
+        }
+        return "opcode=${if (opcode == null) "UNKNOWN" else "0x%02X".format(opcode)} type=$type len=${packet.size} $details".trim()
+    }
+
     fun parseEarDetection(packet: ByteArray): Pair<Boolean, Boolean>? {
         val frame = decode(packet) ?: return null
         if (frame.opcode != 0x06 || packet.size != 8) return null
