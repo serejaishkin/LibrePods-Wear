@@ -15,6 +15,7 @@ package me.kavishdevar.librepods.bluetooth
 import android.util.Log
 import me.kavishdevar.librepods.data.Capability
 import me.kavishdevar.librepods.data.CustomEq
+import me.kavishdevar.librepods.wear.bluetooth.AirPodsProtocolDiagnostics
 import me.kavishdevar.librepods.wear.bluetooth.AirPodsProtocolTransport
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -144,7 +145,6 @@ class AACPManager {
     private var callback: PacketCallback? = null
     fun setPacketCallback(callback: PacketCallback) { this.callback = callback }
 
-    /** Start only the first handshake step. The remaining steps are driven by ACK packets. */
     fun startSession(): Boolean {
         if (sessionState != SessionState.IDLE) return sessionState == SessionState.READY
         val sent = sendRaw(handshake)
@@ -209,8 +209,11 @@ class AACPManager {
         return sendDataPacket(createControlCommandPacket(identifier, value))
     }
 
-    /** Feed one AACP L2CAP payload. ACKs advance the strict handshake state machine. */
+    /** Feed one complete AACP payload. Raw bytes are logged before parsing. */
     fun receivePacket(packet: ByteArray) {
+        Log.d(tag, "AACP RX raw: ${AirPodsProtocolDiagnostics.hex(packet)}")
+        Log.d(tag, "AACP RX: ${AirPodsProtocolDiagnostics.debugSummary(packet)}")
+
         if (packet.size >= 4 && packet[0] == 0x01.toByte() && packet[1] == 0x00.toByte() && packet[2] == 0x04.toByte() && packet[3] == 0x00.toByte()) {
             if (sessionState == SessionState.HANDSHAKE_SENT) {
                 Log.i(tag, "AACP handshake ACK received")
@@ -226,11 +229,37 @@ class AACPManager {
                 } else callback?.onUnknownPacketReceived(packet)
                 Opcodes.BATTERY_INFO -> callback?.onBatteryInfoReceived(packet)
                 Opcodes.EAR_DETECTION -> callback?.onEarDetectionReceived(packet)
+                Opcodes.INFORMATION -> {
+                    val information = AirPodsProtocolDiagnostics.parseMetadata(packet)
+                    if (information != null) {
+                        callback?.onDeviceInformationReceived(
+                            AirPodsInformation(
+                                name = information.name,
+                                modelNumber = information.modelNumber,
+                                manufacturer = information.manufacturer,
+                                serialNumber = information.serialNumber,
+                                version1 = information.version1,
+                                version2 = information.version2,
+                                hardwareRevision = information.unknownNumericValue,
+                                updaterIdentifier = information.updaterIdentifier,
+                                leftSerialNumber = information.leftSerialNumber,
+                                rightSerialNumber = information.rightSerialNumber,
+                                version3 = information.softwareVersion,
+                            )
+                        )
+                    } else {
+                        Log.w(tag, "AACP metadata parse failed; raw packet retained above")
+                        callback?.onUnknownPacketReceived(packet)
+                    }
+                }
                 Opcodes.CONTROL_COMMAND -> runCatching {
                     val command = ControlCommand.fromByteArray(packet)
                     ControlCommandIdentifiers.fromByte(command.identifier)?.let { id -> controlCommandStatusList.add(ControlCommandStatus(id, command.value)) }
                     callback?.onControlCommandReceived(packet)
-                }.onFailure { callback?.onUnknownPacketReceived(packet) }
+                }.onFailure {
+                    Log.w(tag, "AACP control command parse failed: ${it.message}")
+                    callback?.onUnknownPacketReceived(packet)
+                }
                 else -> callback?.onUnknownPacketReceived(packet)
             }
             return
