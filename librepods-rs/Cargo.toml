@@ -1,0 +1,19 @@
+[package]
+name = "librepods-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-platform AirPods status reader (battery, charge, in-ear) for macOS and Windows, ported from LibrePods Linux."
+license = "GPL-3.0"
+
+[dependencies]
+btleplug = "0.12"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+log = "0.4"
+env_logger = "0.11"
+futures = "0.3"
+tray-icon = "0.20"
+winit = "0.30"
+
+[dev-dependencies]
