@@ -14,11 +14,10 @@ import android.util.Log
 import java.util.UUID
 
 /**
- * Reads AirPods battery levels via GATT.
+ * Performs a single bounded GATT battery read.
  *
- * Tries the standard Battery Service first, then falls back to Apple's
- * proximity service when the device is connected over classic Bluetooth
- * and does not advertise Apple manufacturer data over BLE scan.
+ * This reader deliberately does not poll. The controller owns when a fallback
+ * read is appropriate and keeps AACP as the authoritative battery source.
  */
 class BLEGattBatteryReader(private val context: Context) {
 
@@ -46,7 +45,7 @@ class BLEGattBatteryReader(private val context: Context) {
 
     private val connectTimeoutRunnable = Runnable {
         if (!connected && !finished) {
-            Log.w(TAG, "GATT connect timeout for $targetAddress (transport=$currentTransport)")
+            Log.w(TAG, "GATT connect timeout (transport=$currentTransport)")
             tryNextTransportOrFail("GATT connect timeout")
         }
     }
@@ -57,7 +56,7 @@ class BLEGattBatteryReader(private val context: Context) {
     @SuppressLint("MissingPermission")
     fun readBattery(address: String, cb: BatteryCallback) {
         if (gatt != null) {
-            Log.d(TAG, "Already connected/connecting, skipping duplicate read for $address")
+            Log.d(TAG, "Already connected/connecting, skipping duplicate read")
             return
         }
 
@@ -76,17 +75,14 @@ class BLEGattBatteryReader(private val context: Context) {
         val adapter = btManager.adapter
         val device = adapter?.getRemoteDevice(address)
         if (device == null) {
-            finishWithFailure("Device not found: $address")
+            finishWithFailure("Device not found")
             return
         }
 
         handler.removeCallbacks(connectTimeoutRunnable)
         handler.postDelayed(connectTimeoutRunnable, CONNECT_TIMEOUT_MS)
 
-        Log.d(TAG, "Connecting GATT to $address via transport=$currentTransport")
-        // #region agent log
-        Log.i(TAG, "DEBUG341ec7 hypothesis=D gatt_connect address=$address transport=$currentTransport")
-        // #endregion
+        Log.d(TAG, "Connecting GATT via transport=$currentTransport")
         gatt = device.connectGatt(context, false, gattCallback, currentTransport)
     }
 
@@ -114,9 +110,6 @@ class BLEGattBatteryReader(private val context: Context) {
         finished = true
         handler.removeCallbacks(connectTimeoutRunnable)
         Log.w(TAG, "GATT battery read failed: $reason")
-        // #region agent log
-        Log.i(TAG, "DEBUG341ec7 hypothesis=D gatt_failed address=${targetAddress ?: ""} reason=$reason")
-        // #endregion
         val cb = callback
         cleanup()
         cb?.onReadFailed(reason)
@@ -126,10 +119,7 @@ class BLEGattBatteryReader(private val context: Context) {
         if (finished) return
         finished = true
         handler.removeCallbacks(connectTimeoutRunnable)
-        Log.i(TAG, "GATT battery read: L=$left R=$right C=$case from $targetAddress")
-        // #region agent log
-        Log.i(TAG, "DEBUG341ec7 hypothesis=C gatt_battery address=${targetAddress ?: ""} left=$left right=$right case=$case")
-        // #endregion
+        Log.i(TAG, "GATT battery read: L=$left R=$right C=$case")
         val cb = callback
         cleanup()
         cb?.onBatteryRead(left, right, case)
@@ -161,7 +151,7 @@ class BLEGattBatteryReader(private val context: Context) {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
             if (newState == BluetoothProfile.STATE_CONNECTED) {
                 connected = true
-                Log.d(TAG, "GATT connected to ${gatt.device?.address} (status=$status transport=$currentTransport)")
+                Log.d(TAG, "GATT connected (status=$status transport=$currentTransport)")
                 handler.postDelayed({ discoverServices(gatt) }, SERVICE_DISCOVERY_DELAY_MS)
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED || status != BluetoothGatt.GATT_SUCCESS) {
                 Log.w(TAG, "GATT disconnected: status=$status newState=$newState transport=$currentTransport")
@@ -176,7 +166,7 @@ class BLEGattBatteryReader(private val context: Context) {
             }
 
             val services = gatt.services.map { it.uuid.toString() }
-            Log.d(TAG, "GATT services on ${gatt.device?.address}: $services")
+            Log.d(TAG, "GATT services: $services")
 
             val standardBattery = gatt.getService(BATTERY_SERVICE_UUID)?.getCharacteristic(BATTERY_LEVEL_UUID)
             if (standardBattery != null) {
@@ -188,7 +178,9 @@ class BLEGattBatteryReader(private val context: Context) {
 
             val appleService = gatt.getService(APPLE_BATTERY_SERVICE_UUID)
             if (appleService != null) {
-                val readable = appleService.characteristics.firstOrNull { it.properties and BluetoothGattCharacteristic.PROPERTY_READ != 0 }
+                val readable = appleService.characteristics.firstOrNull {
+                    it.properties and BluetoothGattCharacteristic.PROPERTY_READ != 0
+                }
                 if (readable != null && gatt.readCharacteristic(readable)) return
             }
 
@@ -231,8 +223,9 @@ class BLEGattBatteryReader(private val context: Context) {
             }
 
             if (characteristic.uuid == BATTERY_LEVEL_UUID && data.size == 1) {
-                val level = data[0].toInt() and 0xFF
-                finishWithBattery(left = null, right = null, case = level)
+                // Standard Battery Service exposes one level only. Do not
+                // invent L/R/Case mapping; preserve existing values in state.
+                finishWithBattery(left = null, right = null, case = data[0].toInt() and 0xFF)
                 return
             }
 
@@ -247,11 +240,13 @@ class BLEGattBatteryReader(private val context: Context) {
 
     private fun parseAppleBatteryPayload(data: ByteArray): Triple<Int?, Int?, Int?>? {
         if (data.size < 3) return null
+
         fun decodeNibble(n: Int): Int? = when (n) {
             in 0x0..0x9 -> n * 10
             in 0xA..0xE -> 100
             else -> null
         }
+
         val left = decodeNibble(data[0].toInt() and 0x0F)
         val right = decodeNibble((data[0].toInt() shr 4) and 0x0F)
         val case = decodeNibble(data[1].toInt() and 0x0F)
