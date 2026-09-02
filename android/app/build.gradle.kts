@@ -13,33 +13,17 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "0.1.0-wear-dev"
-        // NDK/native build disabled – L2CAP broken on Wear OS
     }
-
-    buildTypes {
-        release {
-            isMinifyEnabled = true
-            isShrinkResources = true
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro",
-            )
-        }
-        debug {
-            versionNameSuffix = "-debug"
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
-
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_21
-        targetCompatibility = JavaVersion.VERSION_21
-    }
-
+    ndkVersion = "27.0.12077973"
     buildFeatures {
         compose = true
     }
-
-    // NDK native build disabled – L2CAP broken on Wear OS
 }
 
 dependencies {

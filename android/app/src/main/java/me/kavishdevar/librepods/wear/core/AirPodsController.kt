@@ -172,11 +172,14 @@ class AirPodsController(private val context: Context, private val transport: Wea
             val hfpManager = context.getSystemService(android.bluetooth.BluetoothHeadset::class.java)
             val a2dpManager = context.getSystemService(android.bluetooth.BluetoothA2dp::class.java)
             val classicProfilesUnavailable = hfpManager == null && a2dpManager == null
-            if (tryAacp && (isLeAudio || classicProfilesUnavailable)) {
-                Log.i(tag, "connectToDevice: L2CAP/AACP not available (type=${device.type}, classicProfiles=$classicProfilesUnavailable), staying CLASSIC_CONNECTED")
+            if (tryAacp && isLeAudio) {
+                // LE Audio devices cannot use L2CAP/AACP on Wear OS
+                Log.i(tag, "connectToDevice: LE Audio detected, staying CLASSIC_CONNECTED")
                 internalStateStore.update { it.copy(protocolStage = "CLASSIC_CONNECTED", connected = true, connecting = false, lastError = null) }
                 return true
             }
+            // Classic profiles (HFP/A2DP) may be null on Wear OS even when bonded devices
+            // are connected — attempt L2CAP/AACP via native socket (NDK) or reflection.
             connectBondedBleMode(address, name)
             if (tryAacp) {
                 markConnecting()
