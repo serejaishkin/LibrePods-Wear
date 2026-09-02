@@ -4,7 +4,9 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.os.Build
 import android.util.Log
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -112,6 +114,7 @@ class AirPodsController(private val context: Context, private val transport: Wea
         aacpManager.bindTransport(transport); aacpManager.setPacketCallback(aacpCallback)
         bleManager.setAirPodsStatusListener(bleListener)
         loadPersistedState()
+        registerAclReceiver()
         runCatching { bleManager.startScanning() }.onFailure { Log.w(tag, "BLE status scanner could not start", it) }
         scope.launch {
             while (true) {
@@ -144,7 +147,7 @@ class AirPodsController(private val context: Context, private val transport: Wea
                 )
             }
             Log.i(tag, "Loaded persisted battery: L=$left R=$right Case=$caseB")
-}
+        }
     }
 
    @SuppressLint("MissingPermission")
@@ -168,18 +171,22 @@ class AirPodsController(private val context: Context, private val transport: Wea
                 .putString("last_connected_address", address)
                 .putString("last_connected_name", name)
                 .apply()
-            val isLeAudio = device.type == BluetoothDevice.DEVICE_TYPE_LE || device.type == BluetoothDevice.DEVICE_TYPE_DUAL
-            val hfpManager = context.getSystemService(android.bluetooth.BluetoothHeadset::class.java)
-            val a2dpManager = context.getSystemService(android.bluetooth.BluetoothA2dp::class.java)
-            val classicProfilesUnavailable = hfpManager == null && a2dpManager == null
+            val isLeAudio = device.type == BluetoothDevice.DEVICE_TYPE_LE
             if (tryAacp && isLeAudio) {
-                // LE Audio devices cannot use L2CAP/AACP on Wear OS
-                Log.i(tag, "connectToDevice: LE Audio detected, staying CLASSIC_CONNECTED")
-                internalStateStore.update { it.copy(protocolStage = "CLASSIC_CONNECTED", connected = true, connecting = false, lastError = null) }
+                Log.i(tag, "connectToDevice: LE-only device, staying CLASSIC_CONNECTED and refreshing battery")
+                internalStateStore.update {
+                    it.copy(
+                        deviceName = name,
+                        address = address,
+                        protocolStage = "CLASSIC_CONNECTED",
+                        connected = true,
+                        connecting = false,
+                        lastError = null,
+                    )
+                }
+                startBatteryRefresh(address)
                 return true
             }
-            // Classic profiles (HFP/A2DP) may be null on Wear OS even when bonded devices
-            // are connected — attempt L2CAP/AACP via native socket (NDK) or reflection.
             connectBondedBleMode(address, name)
             if (tryAacp) {
                 markConnecting()
@@ -211,7 +218,7 @@ class AirPodsController(private val context: Context, private val transport: Wea
         // #region agent log
         Log.i(tag, "DEBUG341ec7 hypothesis=E bonded_ble_mode address=$address name=$name")
         // #endregion
-        startGattBatteryPolling(address)
+        startBatteryRefresh(address)
         return true
     }
 
@@ -223,23 +230,35 @@ class AirPodsController(private val context: Context, private val transport: Wea
         return connectToDevice(address, name, tryAacp = true)
     }
 
-    private fun startGattBatteryPolling(address: String) {
+    private fun startBatteryRefresh(address: String) {
         gattPollJob?.cancel()
-        val device = context.getSystemService(BluetoothManager::class.java)?.adapter?.getRemoteDevice(address)
-        val isLeAudio = device?.type == BluetoothDevice.DEVICE_TYPE_LE || device?.type == BluetoothDevice.DEVICE_TYPE_DUAL
-        val hfpManager = context.getSystemService(android.bluetooth.BluetoothHeadset::class.java)
-        val a2dpManager = context.getSystemService(android.bluetooth.BluetoothA2dp::class.java)
-        val classicProfilesUnavailable = hfpManager == null && a2dpManager == null
-        if (isLeAudio || classicProfilesUnavailable) {
-            Log.i(tag, "startGattBatteryPolling: GATT not available (type=${device?.type}, classicProfiles=$classicProfilesUnavailable), skipping")
-            return
-        }
         gattPollJob = scope.launch {
             while (!manualDisconnect) {
-                readGattBatteryOnce(address)
-                delay(60_000)
+                refreshBattery(address)
+                delay(30_000)
             }
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun refreshBattery(address: String) {
+        val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter
+        val device = runCatching { adapter?.getRemoteDevice(address) }.getOrNull()
+        val systemLevel = device?.let { readSystemBatteryLevel(it) }
+        if (systemLevel != null) {
+            Log.i(tag, "System battery for $address: $systemLevel%")
+            applyGattBattery(left = systemLevel, right = systemLevel, case = null, address = address)
+        }
+        readGattBatteryOnce(address)
+    }
+
+    @SuppressLint("PrivateApi")
+    private fun readSystemBatteryLevel(device: BluetoothDevice): Int? {
+        return runCatching {
+            val method = BluetoothDevice::class.java.getMethod("getBatteryLevel")
+            val level = method.invoke(device) as Int
+            level.takeIf { it in 0..100 }
+        }.getOrNull()
     }
 
     private suspend fun readGattBatteryOnce(address: String) {
@@ -255,7 +274,7 @@ class AirPodsController(private val context: Context, private val transport: Wea
                 latch.countDown()
             }
         })
-        latch.await()
+        latch.await(15, java.util.concurrent.TimeUnit.SECONDS)
     }
 
     private fun applyGattBattery(left: Int?, right: Int?, case: Int?, address: String) {
@@ -269,7 +288,6 @@ class AirPodsController(private val context: Context, private val transport: Wea
                 caseBattery = case ?: it.caseBattery,
                 connected = true,
                 connecting = false,
-                protocolStage = if (it.protocolStage == "READY") "READY" else "BLE_ONLY",
                 lastError = null,
             )
         }
@@ -596,7 +614,7 @@ class AirPodsController(private val context: Context, private val transport: Wea
                 return@launch
             }
 
-            registerAclReceiver(adapter)
+            registerAclReceiver()
 
             Log.i(tag, "autoConnect: checking classic BT connection...")
             val connectedDevice = findConnectedClassicDevice(adapter)
@@ -617,7 +635,7 @@ class AirPodsController(private val context: Context, private val transport: Wea
                     .putString("last_connected_name", connectedDevice.name)
                     .apply()
                 runCatching { ble?.stopScanning() }
-                startClassicBtBatteryPolling(connectedDevice.address)
+                startBatteryRefresh(connectedDevice.address)
                 return@launch
             }
 
@@ -688,31 +706,17 @@ class AirPodsController(private val context: Context, private val transport: Wea
         return null
     }
 
-    private fun startClassicBtBatteryPolling(address: String) {
-        gattPollJob?.cancel()
-        val device = context.getSystemService(BluetoothManager::class.java)?.adapter?.getRemoteDevice(address)
-        val isLeAudio = device?.type == BluetoothDevice.DEVICE_TYPE_LE || device?.type == BluetoothDevice.DEVICE_TYPE_DUAL
-        val hfpManager = context.getSystemService(android.bluetooth.BluetoothHeadset::class.java)
-        val a2dpManager = context.getSystemService(android.bluetooth.BluetoothA2dp::class.java)
-        val classicProfilesUnavailable = hfpManager == null && a2dpManager == null
-        if (isLeAudio || classicProfilesUnavailable) {
-            Log.i(tag, "startClassicBtBatteryPolling: GATT not available (type=${device?.type}, classicProfiles=$classicProfilesUnavailable), using battery from ACL broadcast only")
-            return
-        }
-        gattPollJob = scope.launch {
-            while (!manualDisconnect) {
-                checkClassicBtBattery(address)
-                delay(30_000)
-            }
-        }
-    }
-
     @SuppressLint("MissingPermission")
-    private fun registerAclReceiver(adapter: android.bluetooth.BluetoothAdapter) {
+    private fun registerAclReceiver() {
         if (aclReceiver != null) return
         val receiver = object : android.content.BroadcastReceiver() {
             override fun onReceive(ctx: android.content.Context, intent: android.content.Intent) {
-                val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
+                val device = if (Build.VERSION.SDK_INT >= 33) {
+                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                } ?: return
                 val lastAddr = prefs.getString("last_connected_address", null)
                 val isAirPods = device.name.orEmpty().let {
                     it.contains("AirPods", true) || it.contains("Pods", true)
@@ -738,7 +742,10 @@ class AirPodsController(private val context: Context, private val transport: Wea
                                 .putString("last_connected_address", device.address)
                                 .putString("last_connected_name", device.name)
                                 .apply()
+                            startBatteryRefresh(device.address)
                             Log.i(tag, "ACL_CONNECTED: set CLASSIC_CONNECTED for ${device.address}")
+                        } else if (isAirPods) {
+                            startBatteryRefresh(device.address)
                         }
                     }
                     BluetoothDevice.ACTION_ACL_DISCONNECTED -> {
@@ -748,20 +755,11 @@ class AirPodsController(private val context: Context, private val transport: Wea
                             connectBondedBleMode(device.address, internalStateStore.state.value.deviceName)
                         }
                     }
-                    "android.bluetooth.device.action.BATTERY_LEVEL_CHANGED" -> {
-                        val batteryLevel = intent.getIntExtra("android.bluetooth.device.extra.BATTERY_LEVEL", -1)
+                    ACTION_BATTERY_LEVEL_CHANGED -> {
+                        val batteryLevel = intent.getIntExtra(EXTRA_BATTERY_LEVEL, -1)
                         Log.i(tag, "BATTERY_LEVEL_CHANGED: ${device.address} battery=$batteryLevel%")
                         if (isAirPods && batteryLevel in 0..100) {
-                            // System-reported battery is usually for the headset itself
-                            internalStateStore.update {
-                                it.copy(
-                                    leftBattery = batteryLevel,
-                                    rightBattery = batteryLevel,
-                                    connected = true,
-                                    protocolStage = if (it.protocolStage == "CLASSIC_CONNECTED") "CLASSIC_CONNECTED" else it.protocolStage,
-                                )
-                            }
-                            persistTileState()
+                            applyGattBattery(batteryLevel, batteryLevel, null, device.address)
                         }
                     }
                 }
@@ -770,9 +768,9 @@ class AirPodsController(private val context: Context, private val transport: Wea
         val filter = android.content.IntentFilter().apply {
             addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
             addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
-            addAction("android.bluetooth.device.action.BATTERY_LEVEL_CHANGED")
+            addAction(ACTION_BATTERY_LEVEL_CHANGED)
         }
-        context.registerReceiver(receiver, filter)
+        ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
         aclReceiver = receiver
         Log.i(tag, "ACL broadcast receiver registered")
     }
