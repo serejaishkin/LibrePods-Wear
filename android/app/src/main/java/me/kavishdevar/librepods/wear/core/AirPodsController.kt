@@ -7,6 +7,7 @@ import android.content.Context
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -27,6 +28,7 @@ import me.kavishdevar.librepods.data.CustomEq
 import me.kavishdevar.librepods.data.StemAction
 import me.kavishdevar.librepods.wear.bluetooth.AirPodsProtocolDiagnostics
 import me.kavishdevar.librepods.wear.bluetooth.WearBluetoothConnection
+import me.kavishdevar.librepods.wear.relay.PhoneRelayManager
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -34,7 +36,9 @@ import java.nio.ByteOrder
 class AirPodsController(private val context: Context, private val transport: WearBluetoothConnection) {
     private val tag = "AirPodsController"
     private val internalStateStore = AirPodsStateStore()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, t ->
+        Log.e(tag, "Uncaught coroutine exception", t)
+    })
     private val prefs = context.getSharedPreferences("librepods_wear", Context.MODE_PRIVATE)
     val state: StateFlow<AirPodsState> = internalStateStore.state
     val stateStore: AirPodsStateStore = internalStateStore
@@ -52,6 +56,8 @@ class AirPodsController(private val context: Context, private val transport: Wea
     private val gattBatteryReader = BLEGattBatteryReader(context)
     private var gattPollJob: Job? = null
     private var aclReceiver: android.content.BroadcastReceiver? = null
+    val phoneRelay = PhoneRelayManager(context)
+    private var useRelay = false
 
     private val bleListener = object : BLEManager.AirPodsStatusListener {
         override fun onDeviceStatusChanged(device: BLEManager.AirPodsStatus, previousStatus: BLEManager.AirPodsStatus?) = applyBleStatus(device)
@@ -115,6 +121,7 @@ class AirPodsController(private val context: Context, private val transport: Wea
         bleManager.setAirPodsStatusListener(bleListener)
         loadPersistedState()
         registerAclReceiver()
+        phoneRelay.initialize()
         runCatching { bleManager.startScanning() }.onFailure { Log.w(tag, "BLE status scanner could not start", it) }
         scope.launch {
             while (true) {
@@ -306,48 +313,80 @@ class AirPodsController(private val context: Context, private val transport: Wea
     @SuppressLint("MissingPermission")
     private suspend fun connectTransport(device: BluetoothDevice) {
         connectMutex.withLock {
+            // Step 1: Try direct L2CAP connection
             try {
-                Log.i(tag, "connectTransport: starting L2CAP connection to ${device.address}")
-                // #region agent log
-                Log.i(tag, "DEBUG341ec7 hypothesis=A l2cap_start address=${device.address}")
-                // #endregion
+                Log.i(tag, "connectTransport: trying direct L2CAP to ${device.address}")
                 internalStateStore.update { it.copy(protocolStage = "L2CAP") }
                 transport.connectAacp(device)
-                Log.i(tag, "connectTransport: L2CAP connected, starting AACP reader")
-                
-                val manager = aacp ?: error("AACP manager is not initialized")
-                startAacpReader(manager)
-                
-                if (!manager.startSession()) {
-                    onError("AACP handshake could not be sent")
-                    runCatching { transport.close() }
+                Log.i(tag, "connectTransport: direct L2CAP connected")
+                useRelay = false
+                startAacpSession()
+                return
+            } catch (e: Throwable) {
+                Log.w(tag, "Direct L2CAP failed: ${e.message}")
+            }
+
+            // Step 2: Fall back to phone companion relay
+            try {
+                Log.i(tag, "connectTransport: trying phone relay to ${device.address}")
+                internalStateStore.update { it.copy(protocolStage = "RELAY") }
+                val relayConnected = phoneRelay.connectAacp(device.address, device.name ?: "AirPods")
+                if (relayConnected) {
+                    useRelay = true
+                    Log.i(tag, "connectTransport: phone relay connected")
+                    internalStateStore.update {
+                        it.copy(
+                            protocolStage = "READY",
+                            connecting = false,
+                            connected = true,
+                            lastError = null,
+                        )
+                    }
                     return
                 }
-                
-                internalStateStore.update { it.copy(protocolStage = "HANDSHAKE_SENT", connecting = true, connected = false) }
-                Log.i(tag, "connectTransport: handshake sent, waiting for READY state")
-                
-                readyWatchJob?.cancel()
-                readyWatchJob = scope.launch {
-                    repeat(50) {
-                        delay(100)
-                        if (manager.sessionState == AACPManager.SessionState.READY) {
-                            Log.i(tag, "connectTransport: session READY")
-                            internalStateStore.update { it.copy(protocolStage = "READY", connecting = false, connected = true, lastError = null) }
-                            refreshState()
-                            initializeAtt()
-                            return@launch
-                        }
-                    }
-                    if (manager.sessionState != AACPManager.SessionState.READY) {
-                        onError("AACP handshake timeout (${manager.sessionState})")
+            } catch (e: Throwable) {
+                Log.w(tag, "Phone relay failed: ${e.message}")
+            }
+
+            // Both failed
+            onError("All connection methods failed (direct L2CAP + phone relay)")
+            runCatching { transport.close() }
+        }
+    }
+
+    private suspend fun startAacpSession() {
+        try {
+            val manager = aacp ?: error("AACP manager is not initialized")
+            startAacpReader(manager)
+
+            if (!manager.startSession()) {
+                onError("AACP handshake could not be sent")
+                runCatching { transport.close() }
+                return
+            }
+
+            internalStateStore.update { it.copy(protocolStage = "HANDSHAKE_SENT", connecting = true, connected = false) }
+            Log.i(tag, "connectTransport: handshake sent, waiting for READY state")
+
+            readyWatchJob?.cancel()
+            readyWatchJob = scope.launch {
+                repeat(50) {
+                    delay(100)
+                    if (manager.sessionState == AACPManager.SessionState.READY) {
+                        Log.i(tag, "connectTransport: session READY")
+                        internalStateStore.update { it.copy(protocolStage = "READY", connecting = false, connected = true, lastError = null) }
+                        refreshState()
+                        initializeAtt()
+                        return@launch
                     }
                 }
-            } catch (e: Throwable) {
-                Log.e(tag, "connectTransport failed: ${e.javaClass.simpleName}: ${e.message}", e)
-                onError("AACP connection failed: ${e.javaClass.simpleName}: ${e.message ?: "unknown error"}", e)
-                runCatching { transport.close() }
+                if (manager.sessionState != AACPManager.SessionState.READY) {
+                    onError("AACP handshake timeout (${manager.sessionState})")
+                }
             }
+        } catch (e: Throwable) {
+            Log.e(tag, "startAacpSession failed: ${e.message}", e)
+            onError("AACP session failed: ${e.message}")
         }
     }
     
@@ -755,8 +794,8 @@ class AirPodsController(private val context: Context, private val transport: Wea
                             connectBondedBleMode(device.address, internalStateStore.state.value.deviceName)
                         }
                     }
-                    ACTION_BATTERY_LEVEL_CHANGED -> {
-                        val batteryLevel = intent.getIntExtra(EXTRA_BATTERY_LEVEL, -1)
+                    "android.bluetooth.device.action.BATTERY_LEVEL_CHANGED" -> {
+                        val batteryLevel = intent.getIntExtra("android.bluetooth.device.extra.BATTERY_LEVEL", -1)
                         Log.i(tag, "BATTERY_LEVEL_CHANGED: ${device.address} battery=$batteryLevel%")
                         if (isAirPods && batteryLevel in 0..100) {
                             applyGattBattery(batteryLevel, batteryLevel, null, device.address)
@@ -768,7 +807,7 @@ class AirPodsController(private val context: Context, private val transport: Wea
         val filter = android.content.IntentFilter().apply {
             addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
             addAction(BluetoothDevice.ACTION_ACL_DISCONNECTED)
-            addAction(ACTION_BATTERY_LEVEL_CHANGED)
+            addAction("android.bluetooth.device.action.BATTERY_LEVEL_CHANGED")
         }
         ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
         aclReceiver = receiver
@@ -984,6 +1023,7 @@ class AirPodsController(private val context: Context, private val transport: Wea
     }
     fun shutdown() {
         disconnect()
+        phoneRelay.destroy()
         unregisterAclReceiver()
         runCatching { ble?.stopScanning() }
         gattBatteryReader.cleanup()

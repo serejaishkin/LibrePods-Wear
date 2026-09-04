@@ -20,7 +20,7 @@ android {
             version = "3.22.1"
         }
     }
-    ndkVersion = "27.0.12077973"
+    ndkVersion = "26.1.10909125"
     buildFeatures {
         compose = true
     }
@@ -41,5 +41,9 @@ dependencies {
     implementation("androidx.wear.tiles:tiles:1.4.0")
     implementation("androidx.wear.tiles:tiles-material:1.4.0")
     implementation("androidx.wear:wear-remote-interactions:1.0.0")
+
+    // Wear Data Layer API — phone companion relay
+    implementation("com.google.android.gms:play-services-wearable:18.2.0")
+
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

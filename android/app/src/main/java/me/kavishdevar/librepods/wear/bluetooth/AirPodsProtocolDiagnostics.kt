@@ -100,7 +100,10 @@ object AirPodsProtocolDiagnostics {
         val values = ArrayList<String>(11)
         var cursor = start
         while (cursor < packet.size && values.size < 11) {
-            val end = packet.indexOf(0.toByte(), cursor)
+            var end = -1
+            for (i in cursor until packet.size) {
+                if (packet[i] == 0.toByte()) { end = i; break }
+            }
             if (end < 0) return null
             values += packet.copyOfRange(cursor, end).toString(Charsets.UTF_8)
             cursor = end + 1
