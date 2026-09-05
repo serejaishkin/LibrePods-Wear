@@ -4,9 +4,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.wear.compose.material3.FilledTonalButton
 import androidx.wear.compose.material3.MaterialTheme
 import androidx.wear.compose.material3.Text
@@ -48,16 +52,36 @@ fun StepperRow(
     step: Int = 10,
     onValueChange: (Int) -> Unit,
 ) {
-    Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(label, style = MaterialTheme.typography.labelSmall)
+    Column(modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            label,
+            color = LibrePodsColors.Neutral500,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium
+        )
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            FilledTonalButton(onClick = { onValueChange((value - step).coerceIn(0, 100)) }) { Text("-") }
-            Text("$value%", style = MaterialTheme.typography.bodyMedium)
-            FilledTonalButton(onClick = { onValueChange((value + step).coerceIn(0, 100)) }) { Text("+") }
+            MaterialCompactButton(
+                text = "-",
+                onClick = { onValueChange((value - step).coerceIn(0, 100)) },
+                backgroundColor = LibrePodsColors.Neutral800,
+                textColor = LibrePodsColors.Neutral300
+            )
+            Text(
+                "$value%",
+                color = LibrePodsColors.Neutral300,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold
+            )
+            MaterialCompactButton(
+                text = "+",
+                onClick = { onValueChange((value + step).coerceIn(0, 100)) },
+                backgroundColor = LibrePodsColors.Neutral800,
+                textColor = LibrePodsColors.Neutral300
+            )
         }
     }
 }
@@ -66,20 +90,29 @@ fun StepperRow(
 fun StemActionRow(
     label: String,
     currentAction: StemAction,
+    modifier: Modifier = Modifier,
     onActionChange: (StemAction) -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(label, style = MaterialTheme.typography.labelSmall)
-        Text(currentAction.name.replace("_", " "), style = MaterialTheme.typography.bodyMedium)
-        FilledTonalButton(
+    Column(modifier = modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            label,
+            color = LibrePodsColors.Neutral500,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium
+        )
+        Text(
+            currentAction.name.replace("_", " "),
+            color = LibrePodsColors.Neutral300,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Normal
+        )
+        MaterialSecondaryButton(
+            text = "Change action",
             onClick = {
                 val currentIndex = StemAction.entries.indexOf(currentAction)
                 val nextIndex = (currentIndex + 1) % StemAction.entries.size
                 onActionChange(StemAction.entries[nextIndex])
-            },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Change action", style = MaterialTheme.typography.labelSmall)
-        }
+            }
+        )
     }
 }

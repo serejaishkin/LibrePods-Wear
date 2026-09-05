@@ -13,9 +13,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.ScalingLazyListScope
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
@@ -76,11 +78,11 @@ fun AirPodsHomeScreen(
                 contentPadding = contentPadding,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                item { ListHeader { Text(state.deviceName) } }
-                item { StatusText(state) }
+                item { MaterialSectionHeader(state.deviceName) }
+                item { MaterialStatusText(state) }
 
                 if (state.connected || state.leftBattery != null || state.rightBattery != null || state.caseBattery != null) {
-                    item { BatteryRow(state) }
+                    item { MaterialBatteryRow(state) }
                 }
 
                 if (state.connected && state.protocolStage == "CLASSIC_CONNECTED") {
@@ -94,17 +96,19 @@ fun AirPodsHomeScreen(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
                         )
                     }
-                    item { EarStatusText(state) }
+                    item { MaterialEarStatusText(state) }
                     infoItems(state)
                     item {
-                        Button(onClick = { controller.tryAacpConnect() }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Try AACP (will fail)")
-                        }
+                        MaterialSecondaryButton(
+                            text = "Try AACP (will fail)",
+                            onClick = { controller.tryAacpConnect() }
+                        )
                     }
                     item {
-                        Button(onClick = { controller.disconnect() }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Disconnect")
-                        }
+                        MaterialDangerButton(
+                            text = "Disconnect",
+                            onClick = { controller.disconnect() }
+                        )
                     }
                 } else if (state.connected && state.protocolStage == "BLE_ONLY") {
                     item {
@@ -117,17 +121,19 @@ fun AirPodsHomeScreen(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
                         )
                     }
-                    item { EarStatusText(state) }
+                    item { MaterialEarStatusText(state) }
                     infoItems(state)
                     item {
-                        Button(onClick = { controller.tryAacpConnect() }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Try AACP connect")
-                        }
+                        MaterialPrimaryButton(
+                            text = "Try AACP connect",
+                            onClick = { controller.tryAacpConnect() }
+                        )
                     }
                     item {
-                        Button(onClick = { controller.disconnect() }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Disconnect")
-                        }
+                        MaterialDangerButton(
+                            text = "Disconnect",
+                            onClick = { controller.disconnect() }
+                        )
                     }
                 } else if (state.connected) {
                     item {
@@ -145,9 +151,9 @@ fun AirPodsHomeScreen(
                             if (!controller.setConversationalAwareness(enabled)) controller.onError("Failed to set conversation awareness")
                         }
                     }
-                    item { EarStatusText(state) }
+                    item { MaterialEarStatusText(state) }
 
-                    item { ListHeader { Text("Settings") } }
+                    item { MaterialSectionHeader("Settings") }
                     state.adaptiveStrengthPercent()?.let { percent ->
                         item {
                             StepperRow("Adaptive strength", percent) { value ->
@@ -166,29 +172,34 @@ fun AirPodsHomeScreen(
                     infoItems(state)
 
                     item {
-                        Button(onClick = { controller.refreshState() }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Refresh state")
-                        }
+                        MaterialSecondaryButton(
+                            text = "Refresh state",
+                            onClick = { controller.refreshState() }
+                        )
                     }
                     item {
-                        Button(onClick = { showRenameDialog = true }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Rename AirPods")
-                        }
+                        MaterialSecondaryButton(
+                            text = "Rename AirPods",
+                            onClick = { showRenameDialog = true }
+                        )
                     }
                     item {
-                        Button(onClick = { controller.forgetDevice() }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Forget device")
-                        }
+                        MaterialDangerButton(
+                            text = "Forget device",
+                            onClick = { controller.forgetDevice() }
+                        )
                     }
                     item {
-                        Button(onClick = { controller.resetSettings() }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Reset settings")
-                        }
+                        MaterialSecondaryButton(
+                            text = "Reset settings",
+                            onClick = { controller.resetSettings() }
+                        )
                     }
                     item {
-                        Button(onClick = { controller.checkFirmwareUpdates() }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Check updates")
-                        }
+                        MaterialPrimaryButton(
+                            text = "Check updates",
+                            onClick = { controller.checkFirmwareUpdates() }
+                        )
                     }
                     if (state.firmwareUpdateAvailable) {
                         item {
@@ -196,21 +207,35 @@ fun AirPodsHomeScreen(
                         }
                     }
                     item {
-                        Button(onClick = { controller.disconnect() }, modifier = Modifier.fillMaxWidth()) {
-                            Text("Disconnect")
-                        }
+                        MaterialDangerButton(
+                            text = "Disconnect",
+                            onClick = { controller.disconnect() }
+                        )
                     }
                 } else {
-                    item { ListHeader { Text("Paired devices") } }
+                    item { MaterialSectionHeader("Paired devices") }
                     if (devices.isEmpty()) {
-                        item { Text("No paired devices", textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) }
+                        item {
+                            Text(
+                                "No paired devices",
+                                textAlign = TextAlign.Center,
+                                color = LibrePodsColors.Neutral500,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
-                    deviceItems(devices, controller)
+                    materialDeviceItems(devices, controller)
                     item {
-                        Button(onClick = onOpenSystemBluetooth, modifier = Modifier.fillMaxWidth()) { Text("Pair in settings") }
+                        MaterialPrimaryButton(
+                            text = "Pair in settings",
+                            onClick = onOpenSystemBluetooth
+                        )
                     }
                     item {
-                        Button(onClick = onRefresh, modifier = Modifier.fillMaxWidth()) { Text("Refresh") }
+                        MaterialSecondaryButton(
+                            text = "Refresh",
+                            onClick = onRefresh
+                        )
                     }
                 }
                 }
@@ -228,13 +253,10 @@ private fun ScalingLazyListScope.infoItems(state: AirPodsState) {
         state.address?.let { "Address" to it },
     )
     if (rows.isEmpty()) return
-    item { ListHeader { Text("About") } }
+    item { MaterialSectionHeader("About") }
     rows.forEach { (label, value) ->
         item(key = "info_$label") {
-            Column(Modifier.fillMaxWidth()) {
-                Text(label, style = MaterialTheme.typography.labelSmall)
-                Text(value, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
+            MaterialInfoRow(label, value)
         }
     }
 }
@@ -475,21 +497,26 @@ private fun ScalingLazyListScope.advancedSettingsItems(
     }
 }
 
-private fun ScalingLazyListScope.deviceItems(
+private fun ScalingLazyListScope.materialDeviceItems(
     devices: List<AirPodsDevice>,
     controller: AirPodsController,
 ) {
     devices.forEach { device ->
         item(key = device.address) {
-            Button(
-                onClick = { controller.connectToDevice(device.address, device.name) },
-                modifier = Modifier.fillMaxWidth(),
+            MaterialCard(
+                onClick = { controller.connectToDevice(device.address, device.name) }
             ) {
                 Column {
-                    Text(device.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        device.name,
+                        color = LibrePodsColors.Neutral300,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                     Text(
                         if (device.bonded) "Paired · tap to connect" else "Nearby",
-                        style = MaterialTheme.typography.labelSmall,
+                        color = LibrePodsColors.Neutral500,
+                        fontSize = 11.sp
                     )
                 }
             }
@@ -498,7 +525,7 @@ private fun ScalingLazyListScope.deviceItems(
 }
 
 @Composable
-private fun StatusText(state: AirPodsState) {
+private fun MaterialStatusText(state: AirPodsState) {
     val status = when {
         state.connecting -> "Connecting… (${state.protocolStage})"
         state.connected && state.protocolStage == "CLASSIC_CONNECTED" -> "Connected via Bluetooth"
@@ -507,25 +534,35 @@ private fun StatusText(state: AirPodsState) {
         state.lastError != null -> state.lastError
         else -> "Not connected"
     }
+    val (statusText, statusColor) = when {
+        state.connected -> Pair(status, LibrePodsColors.Emerald500)
+        state.connecting -> Pair(status, LibrePodsColors.Amber500)
+        state.lastError != null -> Pair(status, LibrePodsColors.Red600)
+        else -> Pair(status, LibrePodsColors.Neutral500)
+    }
+
     Text(
-        status.orEmpty(),
-        style = MaterialTheme.typography.labelMedium,
+        statusText.orEmpty(),
+        color = statusColor,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Medium,
         textAlign = TextAlign.Center,
         maxLines = 2,
         overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
     )
 }
 
 @Composable
-private fun EarStatusText(state: AirPodsState) {
+private fun MaterialEarStatusText(state: AirPodsState) {
     if (state.leftInEar == null && state.rightInEar == null) return
     val text = "In ear: ${state.leftInEar.asEarLabel()} / ${state.rightInEar.asEarLabel()}"
     Text(
         text,
-        style = MaterialTheme.typography.labelSmall,
+        color = LibrePodsColors.Neutral500,
+        fontSize = 11.sp,
         textAlign = TextAlign.Center,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
     )
 }
 
@@ -536,22 +573,13 @@ private fun Boolean?.asEarLabel(): String = when (this) {
 }
 
 @Composable
-private fun BatteryRow(state: AirPodsState) {
+private fun MaterialBatteryRow(state: AirPodsState) {
     Row(
-        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
     ) {
-        BatteryCell("L", state.leftBattery, state.leftCharging)
-        BatteryCell("R", state.rightBattery, state.rightCharging)
-        BatteryCell("C", state.caseBattery, state.caseCharging)
-    }
-}
-
-@Composable
-private fun BatteryCell(label: String, level: Int?, charging: Boolean) {
-    val value = if (level != null && level in 0..100) "$level%" else "--"
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(label, style = MaterialTheme.typography.labelSmall)
-        Text(if (charging && value != "--") "$value +" else value, style = MaterialTheme.typography.bodySmall)
+        MaterialBatteryIndicator("L", state.leftBattery, state.leftCharging)
+        MaterialBatteryIndicator("R", state.rightBattery, state.rightCharging)
+        MaterialBatteryIndicator("C", state.caseBattery, state.caseCharging)
     }
 }
